@@ -1,0 +1,47 @@
+{
+  "city": "Hyderabad",
+  "profiles": {
+    "Basic living": {
+      "Rent / Housing": { "min": 12000, "max": 22000 },
+      "Groceries": { "min": 4000, "max": 7000 },
+      "Food outside": { "min": 1500, "max": 4000 },
+      "Transport": { "min": 2000, "max": 5000 },
+      "Utilities": { "min": 1500, "max": 3500 },
+      "Internet / Mobile": { "min": 700, "max": 1800 },
+      "Healthcare": { "min": 1000, "max": 3000 },
+      "Insurance": { "min": 1000, "max": 4000 },
+      "Lifestyle / Shopping": { "min": 1000, "max": 4000 },
+      "Entertainment": { "min": 500, "max": 2500 },
+      "Savings / Investments": { "min": 3000, "max": 12000 },
+      "Debt repayment": { "min": 0, "max": 25000 }
+    },
+    "Comfortable living": {
+      "Rent / Housing": { "min": 22000, "max": 45000 },
+      "Groceries": { "min": 7000, "max": 12000 },
+      "Food outside": { "min": 4000, "max": 9000 },
+      "Transport": { "min": 4000, "max": 9000 },
+      "Utilities": { "min": 2500, "max": 5500 },
+      "Internet / Mobile": { "min": 1200, "max": 2500 },
+      "Healthcare": { "min": 2000, "max": 5000 },
+      "Insurance": { "min": 3000, "max": 8000 },
+      "Lifestyle / Shopping": { "min": 3000, "max": 10000 },
+      "Entertainment": { "min": 1500, "max": 5000 },
+      "Savings / Investments": { "min": 10000, "max": 30000 },
+      "Debt repayment": { "min": 0, "max": 45000 }
+    },
+    "Premium living": {
+      "Rent / Housing": { "min": 45000, "max": 90000 },
+      "Groceries": { "min": 12000, "max": 22000 },
+      "Food outside": { "min": 9000, "max": 22000 },
+      "Transport": { "min": 8000, "max": 18000 },
+      "Utilities": { "min": 5000, "max": 12000 },
+      "Internet / Mobile": { "min": 2500, "max": 5000 },
+      "Healthcare": { "min": 4000, "max": 12000 },
+      "Insurance": { "min": 6000, "max": 18000 },
+      "Lifestyle / Shopping": { "min": 10000, "max": 30000 },
+      "Entertainment": { "min": 4000, "max": 15000 },
+      "Savings / Investments": { "min": 25000, "max": 70000 },
+      "Debt repayment": { "min": 0, "max": 80000 }
+    }
+  }
+}
