@@ -43,17 +43,29 @@ Build a fully local personal finance dashboard that imports statements, normaliz
 6. Loan-like rows also become `loan_transactions`.
 7. Credit-card statements can also create/link card profiles and synced card transaction rows.
 8. Audit log records event metadata, not raw sensitive payloads.
+9. Upload page can reprocess one/all stored files to reload normalized rows after parser/categorization/loan/card/UPI logic changes.
+
+## Reprocessing Flow
+
+| Step | Behavior |
+| --- | --- |
+| Trigger | Upload page: reprocess selected upload or all uploads |
+| Scope | Rebuilds `transactions` and derived loan/card rows from the locally stored original file |
+| Preservation | Keeps document metadata, stored file, account, prior loan/card links where possible |
+| Use case | Apply newer parsing logic to existing uploads without deleting/reuploading |
+| Safety | Local only; no private rows are written to docs/logs |
 
 ## Transaction Normalization Flow
 
 | Step | Logic |
 | --- | --- |
-| Date | Parse date with Indian statement tolerance |
-| Amount | Resolve debit/credit columns or signed amount |
+| Date | Parse date with Indian statement tolerance; PDF rows can start with `Sr.No` before the transaction date |
+| Amount | Resolve debit/credit columns or signed amount; ignore opening/closing rows with no debit/credit amount |
 | Type | `debit` or `credit` |
 | Mode | UPI, IMPS, NEFT, RTGS, CARD, CASH, EMI, AUTOPAY, NETBANKING, WALLET, unknown |
 | Merchant | Rule/token extraction from description |
 | Category | Editable rule engine, fallback to heuristics/Miscellaneous |
+| PDF tables | Handles split/repeated bilingual headers like Hindi labels plus `Sr.No`, `Transaction Date`, `Debit`, `Credit`, `Balance` |
 | Safety | Exclude unreasonable parser outliers from analytics |
 
 ## Categorization Flow
@@ -68,9 +80,10 @@ Build a fully local personal finance dashboard that imports statements, normaliz
 
 | Stage | Details |
 | --- | --- |
-| Detection | `MBK` debit = prepayment; `LOAN RECOVERY`/`LOAN REC` = EMI |
+| Detection | `MBK` debit and `Loan Account Payment(s)` debit = prepayment; `LOAN RECOVERY`/`LOAN REC` = EMI |
 | Mapping | Auto-link if one loan exists; else review/link manually |
-| Ledger | Month-level EMI, prepayment, interest, principal, charges, closing |
+| Ledger | Month-level EMI, prepayment, interest, principal, charges, closing; sorted by month |
+| First opening | Statement opening wins; otherwise estimate first imported month from profile schedule when principal/start/rate/EMI exist |
 | Rates | Infer annual rate from `interest / opening * 12 * 100` when data exists |
 | Overrides | Manual monthly override wins over calculated values |
 | Import summary | Loan page shows detected transaction counts, ledger months, EMI, MBK/prepayment, interest, current outstanding |
@@ -88,10 +101,13 @@ Build a fully local personal finance dashboard that imports statements, normaliz
 
 ## UPI Analysis Flow
 
-- UPI mode inferred from description/provider tokens.
+- UPI mode inferred from `payment_mode` or description/provider tokens, including UPI-card rows parsed as card transactions.
 - Receiver from `merchant_name` or normalized description.
 - Personal transfer if marked manually or category/description indicates person/family/self.
 - Repeated payment if same receiver has repeated cadence and low amount variation.
+- UI separates total spend amount, transaction count, average amount, merchant spend, and personal transfers.
+- Credit-card UPI parser ignores reward points/serial/reference columns and uses the final rupee amount column.
+- If many UPI rows have tiny amounts, show a quality warning and ask user to reprocess the upload because the older PDF parser may have read row counts as amounts.
 
 ## Local Assistant/RAG Flow
 

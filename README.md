@@ -13,13 +13,13 @@ Offline-first personal finance dashboard for local statement ingestion, normaliz
 
 | Area | Status |
 | --- | --- |
-| CSV/XLSX/digital PDF upload | Implemented |
+| CSV/XLSX/digital PDF upload | Implemented with selected/all upload reprocessing and bilingual loan table parsing |
 | Transaction normalization/review | Implemented |
 | Rule-based categorization | Implemented, editable |
 | Dashboard and Hyderabad benchmarks | Implemented |
-| Loan analysis | Implemented: EMI, MBK prepayment, LOAN RECOVERY, ledger, inferred rates, overrides |
+| Loan analysis | Implemented: EMI, MBK/Loan Account Payment prepayment, LOAN RECOVERY, profile-schedule opening, ledger, inferred rates, overrides |
 | Credit card analysis | Implemented: card profiles, Normal/EMI/UPI-only/Mixed tags, EMI plans, no-cost EMI true-cost checks, GST/fee separation, UPI-card analysis, manual review |
-| UPI analysis | Implemented: receiver extraction, daily spend, repeated payments |
+| UPI analysis | Implemented: receiver extraction, amount/count metrics, daily spend, repeated payments, parser-quality warnings |
 | Local assistant | Implemented: deterministic handlers, keyword search, optional local embeddings/Ollama |
 | Agent memory/context | Implemented: compact docs, `.codex`, `assistant_memory` schema |
 

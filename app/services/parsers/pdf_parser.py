@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.services.parsers.models import ParsedDocument
+from app.services.parsers.models import ParsedDocument, ParsedTransactionRow
 from app.services.parsers.tabular_parser import HEADER_ALIASES, _normalize_header, parse_tabular_dataframe
 
 try:
@@ -23,7 +23,30 @@ except ImportError:  # pragma: no cover - handled at runtime when dependency mis
 DATE_PREFIX_PATTERN = re.compile(
     r"^(?P<date>\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})\b"
 )
+SERIAL_DATE_PREFIX_PATTERN = re.compile(
+    r"^\s*\d+\s+\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
+)
 AMOUNT_PATTERN = re.compile(r"^[(-]?(?:INR|Rs\.?)?\s*[\d,]+(?:\.\d{1,2})?[)]?\s*(?:CR|DR)?$", re.IGNORECASE)
+ROW_AMOUNT_TOKEN_PATTERN = r"-|(?:INR|Rs\.?)?\s*[\d,]+(?:\.\d{1,2})?\s*(?:CR|DR)?"
+SERIAL_STATEMENT_ROW_PATTERN = re.compile(
+    rf"^\s*(?P<serial>\d+)\s+"
+    rf"(?P<date>\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}})\s+"
+    rf"(?:(?P<value_date>\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}})\s+)?"
+    rf"(?P<description>.+?)\s+"
+    rf"(?P<debit>{ROW_AMOUNT_TOKEN_PATTERN})\s+"
+    rf"(?P<credit>{ROW_AMOUNT_TOKEN_PATTERN})\s+"
+    rf"(?P<balance>(?:INR|Rs\.?)?\s*[\d,]+(?:\.\d{{1,2}})?\s*(?:CR|DR)?)\s*$",
+    re.IGNORECASE,
+)
+CREDIT_CARD_UPI_TEXT_ROW_PATTERN = re.compile(
+    r"^(?P<date>\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+"
+    r"(?P<serial>\d{6,})\s+"
+    r"(?P<description>UPI[-/].*?)\s+"
+    r"(?P<reward_points>-?\d+)"
+    r"(?:\s+(?P<intl_amount>[\d,]+(?:\.\d{1,2})?))?"
+    r"\s+(?P<amount>[\d,]+(?:\.\d{1,2})?)$",
+    re.IGNORECASE,
+)
 
 
 def _normalize_cell(value: object) -> str:
@@ -69,6 +92,13 @@ def _looks_like_header_row(row: list[str]) -> bool:
     return header_hits >= 2
 
 
+def _header_row_index(rows: list[list[str]]) -> int | None:
+    for index, row in enumerate(rows[:6]):
+        if _looks_like_header_row(row):
+            return index
+    return None
+
+
 def _rows_to_dataframe(rows: list[list[str]]) -> pd.DataFrame | None:
     clean_rows = [
         [_normalize_cell(cell) for cell in row]
@@ -78,12 +108,13 @@ def _rows_to_dataframe(rows: list[list[str]]) -> pd.DataFrame | None:
     if len(clean_rows) < 2:
         return None
 
-    if _looks_like_header_row(clean_rows[0]):
-        headers = [_normalize_header(cell) or f"column_{index}" for index, cell in enumerate(clean_rows[0])]
+    header_index = _header_row_index(clean_rows)
+    if header_index is not None:
+        headers = [_normalize_header(cell) or f"column_{index}" for index, cell in enumerate(clean_rows[header_index])]
         padded_rows = []
-        for row in clean_rows[1:]:
+        for row in clean_rows[header_index + 1 :]:
             normalized_row = row[: len(headers)] + [""] * max(0, len(headers) - len(row))
-            if normalized_row and _normalize_header(normalized_row[0]) == headers[0]:
+            if _looks_like_header_row(normalized_row):
                 continue
             padded_rows.append(normalized_row)
         return pd.DataFrame(padded_rows, columns=headers)
@@ -91,6 +122,18 @@ def _rows_to_dataframe(rows: list[list[str]]) -> pd.DataFrame | None:
     structured_records: list[dict[str, str]] = []
     for row in clean_rows:
         if not _looks_like_date(row[0]):
+            if len(row) >= 7 and row[0].isdigit() and _looks_like_date(row[1]):
+                description = " ".join(part for part in row[3:-3] if part)
+                structured_records.append(
+                    {
+                        "date": row[1],
+                        "value date": row[2] if _looks_like_date(row[2]) else "",
+                        "description": description,
+                        "debit": row[-3],
+                        "credit": row[-2],
+                        "balance": row[-1],
+                    }
+                )
             continue
 
         if len(row) >= 6 and _looks_like_date(row[1]):
@@ -192,7 +235,7 @@ def _group_text_lines(raw_text: str) -> list[str]:
         line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             continue
-        if DATE_PREFIX_PATTERN.match(line):
+        if DATE_PREFIX_PATTERN.match(line) or SERIAL_DATE_PREFIX_PATTERN.match(line):
             if buffer:
                 grouped_lines.append(buffer)
             buffer = line
@@ -204,6 +247,26 @@ def _group_text_lines(raw_text: str) -> list[str]:
 
 
 def _line_to_record(line: str) -> dict[str, str] | None:
+    serial_statement_match = SERIAL_STATEMENT_ROW_PATTERN.match(line)
+    if serial_statement_match:
+        return {
+            "date": serial_statement_match.group("date"),
+            "value date": serial_statement_match.group("value_date") or "",
+            "description": serial_statement_match.group("description"),
+            "debit": serial_statement_match.group("debit"),
+            "credit": serial_statement_match.group("credit"),
+            "balance": serial_statement_match.group("balance"),
+        }
+
+    credit_card_upi_match = CREDIT_CARD_UPI_TEXT_ROW_PATTERN.match(line)
+    if credit_card_upi_match:
+        return {
+            "date": credit_card_upi_match.group("date"),
+            "description": credit_card_upi_match.group("description"),
+            "amount": credit_card_upi_match.group("amount"),
+            "type": "debit",
+        }
+
     date_match = DATE_PREFIX_PATTERN.match(line)
     if not date_match:
         return None
@@ -265,6 +328,22 @@ def _extract_text_dataframe(raw_text: str) -> pd.DataFrame | None:
     return pd.DataFrame.from_records(records)
 
 
+def _is_suspicious_credit_card_table_parse(
+    rows: list[ParsedTransactionRow],
+    source_type_override: str | None,
+    detected_document_type: str,
+) -> bool:
+    if "credit_card_statement" not in {source_type_override, detected_document_type} or len(rows) < 20:
+        return False
+    debit_rows = [row for row in rows if row.transaction_type == "debit"]
+    if len(debit_rows) < 20:
+        return False
+    total = sum((row.amount for row in debit_rows), start=debit_rows[0].amount * 0)
+    average = total / len(debit_rows)
+    max_amount = max(row.amount for row in debit_rows)
+    return average < 20 and max_amount < 100
+
+
 def parse_pdf_statement(
     file_path: Path,
     session: Session,
@@ -305,7 +384,14 @@ def parse_pdf_statement(
         detected_document_type = parsed.document_type
         detected_source_name = parsed.detected_source_name
 
-    if parsed_rows:
+    if parsed_rows and not _is_suspicious_credit_card_table_parse(parsed_rows, source_type_override, detected_document_type):
+        parsed_rows = [
+            row
+            for _, row in sorted(
+                enumerate(parsed_rows),
+                key=lambda item: (item[1].date, item[0]),
+            )
+        ]
         return ParsedDocument(
             document_type=detected_document_type,
             parsing_confidence=min(round(best_confidence + 0.05, 2), 0.99),

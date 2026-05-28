@@ -37,7 +37,7 @@ class LoanImportSummary:
 
 
 def list_loans(session: Session) -> list[Loan]:
-    return session.scalars(select(Loan).order_by(Loan.created_at.desc(), Loan.id.desc())).all()
+    return session.scalars(select(Loan).order_by(Loan.name.asc(), Loan.id.asc())).all()
 
 
 def list_loan_import_summaries(session: Session) -> dict[int | None, LoanImportSummary]:
@@ -160,7 +160,7 @@ def save_loan(
 
 
 def list_loan_transactions(session: Session, loan_id: int | None = None, include_unlinked: bool = False) -> list[LoanTransaction]:
-    statement = select(LoanTransaction).order_by(LoanTransaction.transaction_date.desc(), LoanTransaction.id.desc())
+    statement = select(LoanTransaction).order_by(LoanTransaction.transaction_date.asc(), LoanTransaction.id.asc())
     if loan_id is not None:
         if include_unlinked:
             statement = statement.where((LoanTransaction.loan_id == loan_id) | (LoanTransaction.loan_id.is_(None)))

@@ -43,10 +43,19 @@ Use this file as the compact source of truth before changing categorization, loa
 | --- | --- | --- | --- |
 | `MBK` | debit | `prepayment` | high |
 | `LOAN RECOVERY`, `LOAN REC` | debit or loan statement row | `emi` | high |
+| `Loan Account Payment(s)` | debit | `prepayment` | medium-high |
 | `EMI` plus loan hint | debit | `emi` | medium-high |
 | `INTEREST` plus loan hint | debit or loan statement row | `interest` | medium-high |
 | `PROCESSING FEE/CHARGE` | debit | `processing_fee` | medium-high |
 | `PENAL`, `BOUNCE`, `LATE`, `CHARGE` plus loan/EMI | debit | charge subtype | medium |
+
+### Loan PDF Parsing
+
+- Bilingual PDF tables may have Hindi header row followed by English header row; use the English header row for mapping.
+- Repeated page headers must be skipped, not parsed as transactions.
+- Rows can start with `Sr.No` before `Transaction Date`; text fallback must parse that layout.
+- `Opening Balance` and `Closing Balance` rows with no debit/credit amount are not normalized as transactions.
+- Debit/credit rows are sorted by transaction date while preserving statement order for same-date rows.
 
 ### Monthly Ledger Fields
 
@@ -70,6 +79,7 @@ Use this file as the compact source of truth before changing categorization, loa
 | Case | Formula |
 | --- | --- |
 | Known annual rate | `interest = opening * annual_rate / 1200` |
+| First imported month without statement opening | Estimate opening from original principal, loan start date, annual rate, tenure, and EMI schedule |
 | EMI-only principal | `principal = emi - interest - charges` |
 | Closing from calculated values | `closing = opening - principal - prepayment` |
 | Interest from opening/closing | `interest = closing - opening + emi + prepayment - charges` |
@@ -205,6 +215,7 @@ Card usage types: `normal`, `upi_only`, `mixed`, `emi_focused`.
 ### Detection
 
 - Payment mode is UPI if description contains UPI/provider tokens such as `gpay`, `phonepe`, `paytm`, `amazon pay`, `bharatpe`.
+- Credit-card rows are still treated as UPI when raw description contains `UPI`, `BHIM`, `RUPAY UPI`, `QR`, `VPA`, provider names, or VPA handles such as `@ybl`, `@okaxis`, `@paytm`, `@ibl`, `@axl`.
 - UPI export documents can also be selected/detected as `upi_statement`.
 
 ### Receiver Extraction
@@ -234,3 +245,12 @@ Card usage types: `normal`, `upi_only`, `mixed`, `emi_focused`.
 | Cadence | Daily 1-2 days, weekly 6-8, fortnightly 12-17, monthly 25-35 |
 | Amount variation | Exclude if variation ratio > 20 percent |
 | Output | Receiver, cadence, occurrences, typical amount, total spend, last seen |
+
+### Amount Quality Guard
+
+- UPI dashboard metrics must show spend amount and transaction count separately.
+- Credit-card UPI statements with columns like `Reward Points`, `Intl.# amount`, and `Amount (in₹)` must use the final rupee amount column as transaction amount.
+- Reward points, serial numbers, references, and international amount placeholders are not transaction amounts.
+- If `transaction_count >= 20`, average debit amount is below synthetic sanity threshold, and max debit amount is also tiny, surface a parser-quality warning.
+- Do not silently treat row counts/serial numbers as spend amounts.
+- User action: reprocess the affected upload from the Upload page so the latest PDF/text parser reloads rows from the stored local file.

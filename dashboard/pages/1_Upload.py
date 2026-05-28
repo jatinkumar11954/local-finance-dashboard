@@ -13,7 +13,15 @@ for path in (PROJECT_ROOT, DASHBOARD_DIR):
 
 from common import initialize_page, render_sidebar_status, session_scope
 from app.services.credit_cards import CARD_USAGE_TYPES, list_credit_cards
-from app.services.documents import DOCUMENT_TYPES, delete_document, ingest_document_bytes, list_documents, update_document_type
+from app.services.documents import (
+    DOCUMENT_TYPES,
+    delete_document,
+    ingest_document_bytes,
+    list_documents,
+    reprocess_all_documents,
+    reprocess_document,
+    update_document_type,
+)
 
 
 initialize_page("Upload Statements")
@@ -172,6 +180,32 @@ else:
             try:
                 update_document_type(session, selected_document.id, new_document_type)
                 st.success(f"Updated {selected_document.filename} to {new_document_type}.")
+                st.rerun()
+            except ValueError as exc:
+                session.rollback()
+                st.error(str(exc))
+
+    st.subheader("Reprocess imported data")
+    st.caption(
+        "Use this after parser, categorization, loan, credit-card, or UPI logic changes. "
+        "It reloads normalized transactions from the locally stored upload and refreshes derived rows."
+    )
+    reprocess_columns = st.columns(2)
+    if reprocess_columns[0].button("Reprocess selected upload", use_container_width=True):
+        with session_scope() as session:
+            try:
+                response = reprocess_document(session, selected_document.id, new_document_type)
+                st.success(response.message)
+                st.rerun()
+            except ValueError as exc:
+                session.rollback()
+                st.error(str(exc))
+    confirm_reprocess_all = reprocess_columns[1].checkbox("Confirm all uploads")
+    if st.button("Reprocess all uploads", disabled=not confirm_reprocess_all, use_container_width=True):
+        with session_scope() as session:
+            try:
+                responses = reprocess_all_documents(session)
+                st.success(f"Reprocessed {len(responses)} uploads.")
                 st.rerun()
             except ValueError as exc:
                 session.rollback()

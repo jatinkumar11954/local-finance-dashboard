@@ -8,12 +8,31 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Transaction
-from app.services.categorization.rules import is_probable_personal_transfer, normalize_text
+from app.services.categorization.rules import UPI_PROVIDER_TOKENS, is_probable_personal_transfer, normalize_text
 from app.utils.amounts import MAX_REASONABLE_TRANSACTION_AMOUNT
 
 
 TWOPLACES = Decimal("0.01")
 UNLABELED_UPI_SOURCE = "Unlabeled source"
+UPI_RAW_TOKENS = {
+    "upi",
+    "bhim",
+    "gpay",
+    "google pay",
+    "phonepe",
+    "paytm",
+    "cred upi",
+    "rupay upi",
+    "qr",
+    "vpa",
+    "@ybl",
+    "@okaxis",
+    "@oksbi",
+    "@okhdfcbank",
+    "@paytm",
+    "@ibl",
+    "@axl",
+}
 
 
 @dataclass(frozen=True)
@@ -42,9 +61,12 @@ class UpiAnalysisResult:
     total_upi_spend: Decimal
     merchant_spend: Decimal
     personal_transfer_spend: Decimal
+    transaction_count: int
+    average_transaction_amount: Decimal
+    amount_quality_warning: str | None
     daily_spend: list[dict[str, Decimal | date]]
     daily_category_spend: list[dict[str, Decimal | date | str]]
-    top_receivers: list[dict[str, Decimal | str]]
+    top_receivers: list[dict[str, Decimal | int | str]]
     repeated_payments: list[UpiRecurringPayment]
     transactions: list[UpiTransactionInsight]
 
@@ -54,10 +76,39 @@ def _quantize(value: Decimal) -> Decimal:
 
 
 def _receiver_name(transaction: Transaction) -> str:
-    if transaction.merchant_name:
+    if transaction.merchant_name and normalize_text(transaction.merchant_name) not in UPI_RAW_TOKENS:
         return transaction.merchant_name
+    tokens = [
+        token.strip(" -/")
+        for token in transaction.raw_description.replace("|", "/").replace(":", "/").split("/")
+        if token.strip(" -/")
+    ]
+    stopwords = UPI_RAW_TOKENS | {"payment", "collect", "ref", "utr", "rrn", "txn", "debit", "credit", "p2m", "p2a"}
+    for token in tokens:
+        normalized = normalize_text(token)
+        if normalized and normalized not in stopwords and not normalized.isdigit() and "@" not in normalized:
+            return token.title()
     normalized = normalize_text(transaction.raw_description)
     return normalized[:60] or "Unknown"
+
+
+def _is_upi_transaction(transaction: Transaction) -> bool:
+    text = normalize_text(transaction.raw_description)
+    return transaction.payment_mode == "UPI" or any(token in text for token in UPI_RAW_TOKENS | UPI_PROVIDER_TOKENS)
+
+
+def _amount_quality_warning(insights: list[UpiTransactionInsight]) -> str | None:
+    if len(insights) < 20:
+        return None
+    total = sum((insight.amount for insight in insights), start=Decimal("0.00"))
+    average = total / Decimal(len(insights))
+    max_amount = max((insight.amount for insight in insights), default=Decimal("0.00"))
+    if average < Decimal("20.00") and max_amount < Decimal("100.00"):
+        return (
+            "UPI amounts look suspiciously small for the number of rows. "
+            "Reprocess the source upload from the Upload page to apply the latest PDF parser."
+        )
+    return None
 
 
 def _detect_cadence(day_gaps: list[int]) -> str:
@@ -77,13 +128,16 @@ def _detect_cadence(day_gaps: list[int]) -> str:
 
 def list_upi_sources(session: Session) -> list[str]:
     rows = session.scalars(
-        select(Transaction.account_source)
-        .where(Transaction.payment_mode == "UPI")
-        .distinct()
+        select(Transaction)
+        .where(
+            Transaction.is_excluded.is_(False),
+            Transaction.amount <= MAX_REASONABLE_TRANSACTION_AMOUNT,
+        )
         .order_by(Transaction.account_source)
     ).all()
-    sources = [row for row in rows if row]
-    if any(not row for row in rows):
+    upi_rows = [row for row in rows if _is_upi_transaction(row)]
+    sources = sorted({row.account_source for row in upi_rows if row.account_source})
+    if any(not row.account_source for row in upi_rows):
         sources.append(UNLABELED_UPI_SOURCE)
     return sources
 
@@ -95,7 +149,6 @@ def analyze_upi_transactions(
     account_source: str | None = None,
 ) -> UpiAnalysisResult:
     statement = select(Transaction).where(
-        Transaction.payment_mode == "UPI",
         Transaction.is_excluded.is_(False),
         Transaction.amount <= MAX_REASONABLE_TRANSACTION_AMOUNT,
     )
@@ -109,7 +162,11 @@ def analyze_upi_transactions(
         else:
             statement = statement.where(Transaction.account_source == account_source)
 
-    transactions = session.scalars(statement.order_by(Transaction.date.asc(), Transaction.id.asc())).all()
+    transactions = [
+        transaction
+        for transaction in session.scalars(statement.order_by(Transaction.date.asc(), Transaction.id.asc())).all()
+        if _is_upi_transaction(transaction)
+    ]
     debit_transactions = [transaction for transaction in transactions if transaction.transaction_type == "debit"]
 
     insights = [
@@ -136,6 +193,8 @@ def analyze_upi_transactions(
     ]
 
     total_upi_spend = _quantize(sum((insight.amount for insight in insights), start=Decimal("0.00")))
+    transaction_count = len(insights)
+    average_transaction_amount = _quantize(total_upi_spend / Decimal(transaction_count)) if transaction_count else Decimal("0.00")
     merchant_spend = _quantize(
         sum((insight.amount for insight in insights if not insight.is_personal_transfer), start=Decimal("0.00"))
     )
@@ -196,6 +255,9 @@ def analyze_upi_transactions(
         total_upi_spend=total_upi_spend,
         merchant_spend=merchant_spend,
         personal_transfer_spend=personal_transfer_spend,
+        transaction_count=transaction_count,
+        average_transaction_amount=average_transaction_amount,
+        amount_quality_warning=_amount_quality_warning(insights),
         daily_spend=[
             {"date": spend_date, "amount": _quantize(amount)}
             for spend_date, amount in sorted(daily_spend_totals.items())
@@ -205,7 +267,11 @@ def analyze_upi_transactions(
             for (spend_date, category), amount in sorted(daily_category_totals.items())
         ],
         top_receivers=[
-            {"receiver_name": receiver_name, "amount": _quantize(amount)}
+            {
+                "receiver_name": receiver_name,
+                "amount": _quantize(amount),
+                "count": len(receiver_transactions.get(receiver_name, [])),
+            }
             for receiver_name, amount in sorted(receiver_totals.items(), key=lambda item: item[1], reverse=True)[:10]
         ],
         repeated_payments=repeated_payments,

@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Loan, LoanManualOverride, LoanMonthlyLedger, LoanRateEvent, LoanTransaction
+from app.services.loans.calculator import generate_amortization_schedule
 from app.services.loans.detection import LOAN_CHARGE_TYPES
 
 
@@ -172,11 +173,18 @@ def _calculate_month_ledger(
     elif opening is not None:
         notes.append("Opening outstanding read from statement/transaction metadata.")
         confidence += Decimal("0.25")
-    elif loan.outstanding_balance is not None:
+    else:
+        profile_opening = _scheduled_opening_from_profile(loan, ledger_input.month)
+        if profile_opening is not None:
+            opening = profile_opening
+            notes.append("Opening outstanding estimated from loan profile schedule for the first imported month.")
+            confidence += Decimal("0.18")
+
+    if opening is None and loan.outstanding_balance is not None:
         opening = loan.outstanding_balance
         notes.append("Opening outstanding initialized from loan profile; review first month.")
         confidence += Decimal("0.10")
-    else:
+    elif opening is None:
         notes.append("Missing opening outstanding. Enter first month opening outstanding for reliable calculation.")
 
     interest = ledger_input.explicit_interest
@@ -264,3 +272,32 @@ def _calculate_month_ledger(
 def _latest_rate_event(rate_events: list[LoanRateEvent], ledger_month: date) -> LoanRateEvent | None:
     applicable = [event for event in rate_events if event.effective_date <= ledger_month]
     return applicable[-1] if applicable else None
+
+
+def _scheduled_opening_from_profile(loan: Loan, ledger_month: date) -> Decimal | None:
+    if (
+        loan.principal is None
+        or loan.interest_rate_annual is None
+        or loan.start_date is None
+        or loan.tenure_months is None
+        or loan.emi_amount is None
+    ):
+        return None
+    if ledger_month < month_start(loan.start_date):
+        return None
+
+    try:
+        schedule = generate_amortization_schedule(
+            principal=loan.principal,
+            annual_interest_rate=loan.interest_rate_annual,
+            start_date=loan.start_date,
+            tenure_months=loan.tenure_months,
+            emi_amount=loan.emi_amount,
+        )
+    except ValueError:
+        return None
+
+    for row in schedule:
+        if month_start(row.due_date) == ledger_month:
+            return row.opening_balance
+    return None

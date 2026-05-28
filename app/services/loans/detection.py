@@ -54,6 +54,8 @@ def classify_loan_transaction(
         return LoanClassification("prepayment", "Description contains MBK debit pattern.", 0.86)
     if "loan recovery" in text or "loan rec" in text:
         return LoanClassification("emi", "Description contains loan recovery pattern.", 0.92)
+    if "loan account payment" in text and is_debit:
+        return LoanClassification("prepayment", "Description contains loan account payment debit pattern.", 0.84)
     if "loan repayment" in text or ("emi" in text and loan_hint):
         return LoanClassification("emi", "Description contains EMI with loan-related terms.", 0.84)
     if "processing fee" in text or "processing charge" in text or "procng fee" in text or "proc fee" in text:

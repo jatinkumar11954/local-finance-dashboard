@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models.base import utcnow
-from app.models.entities import Account, AuditLog, Document, LoanTransaction, Transaction
+from app.models.entities import Account, AuditLog, CreditCard, CreditCardStatement, Document, LoanTransaction, Transaction
 from app.schemas.document import DocumentRead, DocumentUploadResponse
 from app.services.credit_cards import delete_credit_card_document_data, sync_credit_card_document
 from app.services.loans import detect_and_store_loan_transactions, recalculate_loan_ledger
@@ -194,6 +194,143 @@ def ingest_document_bytes(
         transaction_count=len(parsed.rows),
         message=f"Imported {len(parsed.rows)} transactions from {filename}.",
     )
+
+
+def reprocess_document(
+    session: Session,
+    document_id: int,
+    source_type_override: str | None = None,
+) -> DocumentUploadResponse:
+    document = session.get(Document, document_id)
+    if document is None:
+        raise ValueError(f"Document {document_id} was not found.")
+
+    stored_path = Path(document.stored_path)
+    if not stored_path.exists() or not stored_path.is_file():
+        raise ValueError(f"Stored file for {document.filename} was not found.")
+
+    account = session.get(Account, document.account_id) if document.account_id else None
+    account_name = account.name if account else None
+    previous_loan_ids = {
+        loan_id
+        for loan_id in session.scalars(
+            select(LoanTransaction.loan_id).where(LoanTransaction.source_document_id == document.id)
+        ).all()
+        if loan_id
+    }
+    previous_statement = session.scalar(
+        select(CreditCardStatement).where(CreditCardStatement.source_document_id == document.id)
+    )
+    previous_card = session.get(CreditCard, previous_statement.credit_card_id) if previous_statement else None
+
+    delete_credit_card_document_data(session, document.id)
+    session.execute(delete(LoanTransaction).where(LoanTransaction.source_document_id == document.id))
+    session.execute(delete(Transaction).where(Transaction.source_document_id == document.id))
+    session.flush()
+
+    override = normalize_document_type(source_type_override) or (
+        document.document_type if document.document_type != "unknown" else "auto"
+    )
+    parsed = parse_statement_file(
+        file_path=stored_path,
+        session=session,
+        source_type_override=override,
+        account_source=account_name,
+    )
+
+    transactions: list[Transaction] = []
+    for row in parsed.rows:
+        transaction = Transaction(
+            date=row.date,
+            description=row.description,
+            raw_description=row.raw_description,
+            amount=row.amount,
+            transaction_type=row.transaction_type,
+            account_source=row.account_source or account_name,
+            payment_mode=row.payment_mode,
+            merchant_name=row.merchant_name,
+            category=row.category,
+            subcategory=row.subcategory,
+            confidence_score=row.confidence_score,
+            running_balance=row.running_balance,
+            source_document_id=document.id,
+            account_id=account.id if account else None,
+        )
+        session.add(transaction)
+        transactions.append(transaction)
+    session.flush()
+
+    document.document_type = parsed.document_type
+    document.detected_source_name = parsed.detected_source_name
+    document.parsing_status = "parsed"
+    document.parsing_confidence = parsed.parsing_confidence
+    document.record_count = len(parsed.rows)
+    document.raw_text = parsed.raw_text
+    document.processed_at = utcnow()
+
+    session.add(
+        AuditLog(
+            action="document_reprocessed",
+            entity_type="document",
+            entity_id=str(document.id),
+            details={
+                "filename": document.filename,
+                "document_type": parsed.document_type,
+                "transaction_count": len(parsed.rows),
+            },
+        )
+    )
+
+    loan_transaction_count = detect_and_store_loan_transactions(
+        session=session,
+        document=document,
+        transactions=transactions,
+        parsed_rows=parsed.rows,
+    )
+    if loan_transaction_count and len(previous_loan_ids) == 1:
+        previous_loan_id = next(iter(previous_loan_ids))
+        for loan_transaction in session.scalars(
+            select(LoanTransaction).where(LoanTransaction.source_document_id == document.id)
+        ).all():
+            loan_transaction.loan_id = previous_loan_id
+            session.add(loan_transaction)
+
+    credit_card_transaction_count = sync_credit_card_document(
+        session=session,
+        document=document,
+        transactions=transactions,
+        card_name=previous_card.name if previous_card else None,
+        bank_name=(previous_card.bank_name or previous_card.issuer_name) if previous_card else None,
+        last4=previous_card.last4 if previous_card else None,
+        usage_type=previous_card.usage_type if previous_card else None,
+        uploaded_tag=previous_statement.uploaded_tag if previous_statement else None,
+    )
+    affected_loan_ids = {
+        loan_id
+        for loan_id in session.scalars(
+            select(LoanTransaction.loan_id).where(LoanTransaction.source_document_id == document.id)
+        ).all()
+        if loan_id
+    } | previous_loan_ids
+    session.commit()
+
+    for loan_id in affected_loan_ids:
+        recalculate_loan_ledger(session, loan_id)
+
+    session.refresh(document)
+    return DocumentUploadResponse(
+        document=DocumentRead.from_model(document),
+        transaction_count=len(parsed.rows),
+        message=f"Reprocessed {len(parsed.rows)} transactions from {document.filename}.",
+    )
+
+
+def reprocess_all_documents(session: Session) -> list[DocumentUploadResponse]:
+    document_ids = [document.id for document in list_documents(session)]
+    responses: list[DocumentUploadResponse] = []
+    for document_id in document_ids:
+        responses.append(reprocess_document(session, document_id))
+    return responses
 
 
 def list_documents(session: Session) -> list[Document]:

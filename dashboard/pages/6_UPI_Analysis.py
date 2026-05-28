@@ -41,11 +41,15 @@ with session_scope() as session:
         account_source=None if selected_source == "All sources" else selected_source,
     )
 
-metric_columns = st.columns(4)
+metric_columns = st.columns(5)
 metric_columns[0].metric("Total UPI spend", format_inr(analysis.total_upi_spend))
-metric_columns[1].metric("Merchant spend", format_inr(analysis.merchant_spend))
-metric_columns[2].metric("Personal transfers", format_inr(analysis.personal_transfer_spend))
-metric_columns[3].metric("Repeated payments", len(analysis.repeated_payments))
+metric_columns[1].metric("UPI transactions", f"{analysis.transaction_count:,}")
+metric_columns[2].metric("Average UPI amount", format_inr(analysis.average_transaction_amount))
+metric_columns[3].metric("Merchant spend", format_inr(analysis.merchant_spend))
+metric_columns[4].metric("Personal transfers", format_inr(analysis.personal_transfer_spend))
+
+if analysis.amount_quality_warning:
+    st.warning(analysis.amount_quality_warning)
 
 if not analysis.transactions:
     st.info("No UPI debit transactions matched the current filters.")
@@ -63,7 +67,14 @@ with chart_columns[0]:
 with chart_columns[1]:
     st.subheader("Top receivers / merchants")
     top_receivers_df = pd.DataFrame(
-        [{"receiver_name": item["receiver_name"], "amount": float(item["amount"])} for item in analysis.top_receivers]
+        [
+            {
+                "receiver_name": item["receiver_name"],
+                "transaction_count": item["count"],
+                "amount": float(item["amount"]),
+            }
+            for item in analysis.top_receivers
+        ]
     )
     st.dataframe(top_receivers_df, use_container_width=True, hide_index=True)
 

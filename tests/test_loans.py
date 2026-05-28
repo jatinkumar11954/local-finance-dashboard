@@ -65,6 +65,7 @@ def test_loan_transaction_classification_patterns():
     mbk = classify_loan_transaction("MBK HOME LOAN PREPAYMENT LAN4455", 100000, "debit", "bank_statement")
     mbk_credit = classify_loan_transaction("MBK HOME LOAN PREPAYMENT LAN4455", 100000, "credit", "bank_statement")
     recovery = classify_loan_transaction("LOAN RECOVERY HOME LOAN EMI", 50000, "debit", "bank_statement")
+    loan_account_payment = classify_loan_transaction("Loan Account Payments For :80740600007603", 40000, "debit", "bank_statement")
     non_loan = classify_loan_transaction("UPI/SWIGGY/food order", 850, "debit", "bank_statement")
 
     assert mbk is not None
@@ -72,6 +73,8 @@ def test_loan_transaction_classification_patterns():
     assert mbk_credit is None
     assert recovery is not None
     assert recovery.loan_transaction_type == "emi"
+    assert loan_account_payment is not None
+    assert loan_account_payment.loan_transaction_type == "prepayment"
     assert non_loan is None
 
 
@@ -104,6 +107,21 @@ def test_monthly_ledger_emi_and_mbk_prepayment_same_month(db_session):
     assert ledger[0].interest_charged == Decimal("10000.00")
     assert ledger[0].principal_paid == Decimal("40000.00")
     assert ledger[0].closing_outstanding == Decimal("860000.00")
+
+
+def test_monthly_ledger_first_import_month_uses_profile_schedule_opening(db_session):
+    loan = _create_test_loan(db_session, start_date_value=date(2026, 1, 1))
+    db_session.add(_loan_transaction(loan, "emi", 50000, date(2026, 5, 5), "LOAN RECOVERY EMI"))
+    db_session.add(_loan_transaction(loan, "prepayment", 100000, date(2026, 5, 10), "MBK LOAN PREPAYMENT"))
+    db_session.commit()
+
+    ledger = recalculate_loan_ledger(db_session, loan.id)
+
+    assert ledger[0].opening_outstanding == Decimal("837583.96")
+    assert ledger[0].interest_charged == Decimal("8375.84")
+    assert ledger[0].principal_paid == Decimal("41624.16")
+    assert ledger[0].closing_outstanding == Decimal("695959.80")
+    assert "profile schedule" in ledger[0].calculation_notes
 
 
 def test_monthly_ledger_uses_explicit_interest_and_infers_rate(db_session):
@@ -302,6 +320,7 @@ def _create_test_loan(
     db_session,
     outstanding: int | float | Decimal | None = 1000000,
     annual_rate: int | float | Decimal | None = 12,
+    start_date_value: date = date(2026, 5, 1),
 ) -> Loan:
     loan = Loan(
         name="Home Loan",
@@ -312,7 +331,7 @@ def _create_test_loan(
         principal=Decimal("1000000"),
         interest_rate_annual=Decimal(str(annual_rate)) if annual_rate is not None else None,
         rate_type="floating",
-        start_date=date(2026, 1, 1),
+        start_date=start_date_value,
         tenure_months=240,
         emi_amount=Decimal("50000"),
         outstanding_balance=Decimal(str(outstanding)) if outstanding is not None else None,

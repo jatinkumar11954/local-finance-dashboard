@@ -37,7 +37,11 @@ HEADER_ALIASES = {
         "amount",
         "txn amount",
         "transaction amount",
+        "billing amount",
         "amount inr",
+        "amount in",
+        "amount in rs",
+        "amount in rupees",
         "withdrawal/deposit amount",
     ],
     "debit": [
@@ -134,6 +138,51 @@ def _find_column(columns: list[str], aliases: list[str]) -> str | None:
         if any(alias in normalized for alias in alias_set):
             return column
     return None
+
+
+def _is_non_transaction_amount_column(column: str | None) -> bool:
+    normalized = _normalize_header(column or "")
+    ignored_tokens = {
+        "reward",
+        "points",
+        "intl",
+        "international",
+        "serno",
+        "serial",
+        "sr no",
+        "reference",
+        "ref no",
+        "balance",
+        "available",
+    }
+    return any(token in normalized for token in ignored_tokens)
+
+
+def _find_transaction_amount_column(columns: list[str]) -> str | None:
+    preferred_headers = {
+        "amount in",
+        "amount inr",
+        "amount in rs",
+        "amount in rupees",
+        "transaction amount",
+        "txn amount",
+        "billing amount",
+        "amount",
+    }
+    exact_matches = [
+        column
+        for column in columns
+        if _normalize_header(column) in preferred_headers and not _is_non_transaction_amount_column(column)
+    ]
+    if exact_matches:
+        return exact_matches[-1]
+
+    amount_like_columns = [
+        column
+        for column in columns
+        if "amount" in _normalize_header(column) and not _is_non_transaction_amount_column(column)
+    ]
+    return amount_like_columns[-1] if amount_like_columns else None
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -281,6 +330,11 @@ def parse_tabular_dataframe(
     columns = list(working_frame.columns)
 
     mapping = {field: _find_column(columns, aliases) for field, aliases in HEADER_ALIASES.items()}
+    transaction_amount_column = _find_transaction_amount_column(columns)
+    if transaction_amount_column:
+        mapping["amount"] = transaction_amount_column
+    elif mapping.get("amount") and _is_non_transaction_amount_column(mapping["amount"]):
+        mapping["amount"] = None
     if not mapping["date"] or not mapping["description"] or (not mapping["amount"] and not mapping["debit"] and not mapping["credit"]):
         raise ValueError("Could not identify required columns. Expected date, description, and amount columns.")
 
@@ -355,11 +409,19 @@ def parse_tabular_dataframe(
     confidence += 0.35 if parsed_rows else 0.0
     confidence += 0.20 if valid_rows == len(parsed_rows) and parsed_rows else 0.0
 
+    sorted_rows = [
+        row
+        for _, row in sorted(
+            enumerate(parsed_rows),
+            key=lambda item: (item[1].date, item[0]),
+        )
+    ]
+
     return ParsedDocument(
         document_type=document_type,
         parsing_confidence=round(min(confidence, 0.99), 2),
         detected_source_name=detected_source_name,
-        rows=parsed_rows,
+        rows=sorted_rows,
         raw_text=raw_text or "\n".join(descriptions[:500]),
     )
 

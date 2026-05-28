@@ -75,7 +75,7 @@ python scripts/build_agent_context.py
 
 | Module | Files | Responsibility |
 | --- | --- | --- |
-| Upload/parsing | `app/services/documents.py`, `app/services/parsers/`, `dashboard/pages/1_Upload.py` | Local file ingestion and statement parsing |
+| Upload/parsing | `app/services/documents.py`, `app/services/parsers/`, `dashboard/pages/1_Upload.py` | Local file ingestion, statement parsing, and safe reprocessing of existing uploads |
 | Categorization | `app/services/categorization/rules.py`, `app/services/category_rules.py` | Rule-based categories and editable rules |
 | Transactions | `app/services/transactions.py`, `dashboard/pages/2_Transactions.py` | Manual correction and bulk updates |
 | Dashboard | `app/services/analytics/overview.py`, `dashboard/pages/3_Dashboard.py` | Overview metrics and benchmark comparison |
@@ -117,9 +117,10 @@ python scripts/build_agent_context.py
 | CSV/XLSX/PDF parsing | Implemented for common digital statements |
 | Categorization rules | Implemented, editable locally |
 | Hyderabad benchmarks | Implemented, editable locally |
-| Loan ledger | Implemented with MBK prepayment, LOAN RECOVERY EMI, import summaries/relinking, inferred rates, overrides |
+| Loan ledger | Implemented with MBK/Loan Account Payment prepayment, LOAN RECOVERY EMI, sorted profiles/transactions, profile-schedule first opening, import summaries/relinking, inferred rates, overrides |
 | Credit card analysis | Implemented: card profiles, Normal/EMI/UPI-only/Mixed statement tags, EMI plans, no-cost EMI verification, GST/processing-fee split, UPI-card separation, manual review |
 | UPI analysis | Implemented for receiver extraction, daily spend, recurring payments |
+| Upload reprocessing | Implemented for selected/all stored uploads so parser/logic changes reload normalized and derived rows |
 | Local assistant | Implemented deterministic handlers, keyword search, optional local embeddings/Ollama |
 | App memory | Schema groundwork in `assistant_memory`; future behavior must stay non-sensitive |
 

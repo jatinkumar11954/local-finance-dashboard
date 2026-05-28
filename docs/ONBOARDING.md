@@ -44,6 +44,12 @@ python scripts/build_agent_context.py
 | Database models | `app/models/entities.py`, `app/database.py` |
 | API endpoints | `app/routers/` |
 
+## Reprocessing Existing Uploads
+
+- Use Upload page reprocess controls after parser/categorization/loan/card/UPI logic changes.
+- Reprocessing rebuilds normalized transactions and derived rows from locally stored files.
+- It should preserve account metadata and prior loan/card links where possible.
+
 ## Privacy Mistakes To Avoid
 
 - Do not inspect runtime uploads or local DB files while building context.

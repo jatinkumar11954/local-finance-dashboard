@@ -192,6 +192,15 @@ def infer_payment_mode(description: str) -> str:
     text = normalize_text(description)
     if "upi" in text or any(token in text for token in UPI_PROVIDER_TOKENS):
         return "UPI"
+    if (
+        "loan recovery" in text
+        or "loan rec" in text
+        or "loan repayment" in text
+        or "loan account payment" in text
+        or "toloan" in text
+        or "to loan" in text
+    ):
+        return "EMI"
     if "imps" in text or "p2a" in text or "mbk" in text or "mob" in text:
         return "IMPS"
     if "neft" in text:
@@ -202,7 +211,7 @@ def infer_payment_mode(description: str) -> str:
         return "CARD"
     if "atm" in text or "cash withdrawal" in text:
         return "CASH"
-    if "emi" in text or "loan repayment" in text:
+    if "emi" in text:
         return "EMI"
     if "autopay" in text or "auto debit" in text or "nach" in text or "ecs" in text or "standing instruction" in text or "ach" in text:
         return "AUTOPAY"

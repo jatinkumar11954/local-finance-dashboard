@@ -71,7 +71,7 @@ def loan_option_label(loan) -> str:
 
 
 loan_lookup = {loan_option_label(loan): loan for loan in saved_loans}
-loan_options = ["Create new loan"] + list(loan_lookup.keys())
+loan_options = ["Create new loan"] + sorted(loan_lookup.keys(), key=str.lower)
 if st.session_state.get("selected_loan_profile") not in loan_options:
     st.session_state["selected_loan_profile"] = "Create new loan"
 
@@ -205,6 +205,7 @@ for loan_id, summary in sorted(import_summaries.items(), key=lambda item: (item[
             else None,
         }
     )
+summary_rows = sorted(summary_rows, key=lambda row: str(row["loan"]).lower())
 if summary_rows:
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 else:

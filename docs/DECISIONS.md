@@ -15,3 +15,6 @@
 | 2026-05-28 | Credit-card EMI state is stored separately from normalized transactions | EMI plans need lifecycle, charges, and manual review | `credit_card_transactions`, `credit_card_emi_plans`, and `credit_card_emi_charges` link back to source transactions |
 | 2026-05-28 | Interest rates are inferred unless manually/bank-provided | App is offline and cannot fetch official rates | Rate source must be explicit |
 | 2026-05-28 | Assistant memory is local and non-sensitive | Reuse corrections without storing private payloads | `assistant_memory` stores only approved reusable rules/preferences |
+| 2026-05-28 | Existing uploads can be reprocessed locally | Parser and finance logic improve over time | Stored local files can rebuild normalized and derived rows without cloud calls |
+| 2026-05-28 | UPI amount quality warnings are explicit | Some PDF table extraction can read row numbers as amounts | UI warns and asks user to reprocess instead of silently showing bad totals |
+| 2026-05-28 | First imported loan opening can come from profile schedule | Historical bank statements often show only EMI/prepayment, not loan outstanding | Ledger uses original principal/start/rate/EMI before falling back to current outstanding |
