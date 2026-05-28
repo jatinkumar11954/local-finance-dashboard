@@ -14,14 +14,17 @@ for path in (PROJECT_ROOT, DASHBOARD_DIR):
         sys.path.insert(0, str(path))
 
 from app.services.loans import (
+    DEFAULT_BASE_ANNUAL_RATE,
     LoanPrepayment,
     analyze_home_loan,
+    build_loan_projection,
     list_loan_ledger,
     list_loan_import_summaries,
     list_loan_transactions,
     list_loans,
     recalculate_loan_ledger,
     relink_loan_transactions,
+    revert_loan_transaction_to_source,
     save_loan,
     save_loan_manual_override,
     save_loan_rate_event,
@@ -50,6 +53,53 @@ def parse_optional_float(value: str) -> float | None:
     if not stripped:
         return None
     return float(stripped.replace(",", ""))
+
+
+def parse_editor_float(value) -> float | None:
+    if is_blank_editor_value(value):
+        return None
+    return float(str(value).replace(",", ""))
+
+
+def parse_editor_date(value) -> date | None:
+    if is_blank_editor_value(value):
+        return None
+    if hasattr(value, "date") and not isinstance(value, date):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def is_blank_editor_value(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def editor_values_differ(left, right) -> bool:
+    left_value = normalize_editor_value(left)
+    right_value = normalize_editor_value(right)
+    if isinstance(left_value, float) and isinstance(right_value, float):
+        return abs(left_value - right_value) > 0.000001
+    return left_value != right_value
+
+
+def normalize_editor_value(value):
+    if is_blank_editor_value(value):
+        return None
+    if hasattr(value, "date") and not isinstance(value, date):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, int | float):
+        return float(value)
+    return str(value)
 
 
 initialize_page("Loans")
@@ -115,9 +165,11 @@ with form_columns[0]:
         key=f"principal_{loan_widget_suffix}",
     )
     interest_rate = st.number_input(
-        "Annual interest rate (%)",
+        "Base annual interest rate (%)",
         min_value=0.0,
-        value=float(selected_loan.interest_rate_annual) if selected_loan and selected_loan.interest_rate_annual is not None else 8.5,
+        value=float(selected_loan.interest_rate_annual)
+        if selected_loan and selected_loan.interest_rate_annual is not None
+        else DEFAULT_BASE_ANNUAL_RATE,
         step=0.05,
         key=f"interest_rate_{loan_widget_suffix}",
     )
@@ -156,6 +208,35 @@ with form_columns[1]:
         step=10000.0,
         key=f"outstanding_balance_{loan_widget_suffix}",
     )
+    st.caption("Optional summary totals from bank/app records. Leave blank as 0 if unknown.")
+    summary_total_paid = st.number_input(
+        "Total amount paid till date",
+        min_value=0.0,
+        value=float(selected_loan.summary_total_paid) if selected_loan and selected_loan.summary_total_paid is not None else 0.0,
+        step=1000.0,
+        key=f"summary_total_paid_{loan_widget_suffix}",
+    )
+    summary_interest_paid = st.number_input(
+        "Total interest paid till date",
+        min_value=0.0,
+        value=float(selected_loan.summary_interest_paid) if selected_loan and selected_loan.summary_interest_paid is not None else 0.0,
+        step=1000.0,
+        key=f"summary_interest_paid_{loan_widget_suffix}",
+    )
+    summary_principal_paid = st.number_input(
+        "Total principal paid till date",
+        min_value=0.0,
+        value=float(selected_loan.summary_principal_paid) if selected_loan and selected_loan.summary_principal_paid is not None else 0.0,
+        step=1000.0,
+        key=f"summary_principal_paid_{loan_widget_suffix}",
+    )
+    summary_prepayment_paid = st.number_input(
+        "Total prepayment paid till date",
+        min_value=0.0,
+        value=float(selected_loan.summary_prepayment_paid) if selected_loan and selected_loan.summary_prepayment_paid is not None else 0.0,
+        step=1000.0,
+        key=f"summary_prepayment_paid_{loan_widget_suffix}",
+    )
 
 notes = st.text_area(
     "Notes",
@@ -179,6 +260,10 @@ if save_columns[0].button("Save loan profile", use_container_width=True, type="p
             tenure_months=int(tenure_months),
             emi_amount=emi_amount,
             outstanding_balance=outstanding_balance or None,
+            summary_total_paid=summary_total_paid or None,
+            summary_interest_paid=summary_interest_paid or None,
+            summary_principal_paid=summary_principal_paid or None,
+            summary_prepayment_paid=summary_prepayment_paid or None,
             notes=notes or None,
         )
     st.success(f"Loan profile saved: {saved.name}")
@@ -369,27 +454,40 @@ else:
         all_loans = list_loans(session)
 
     total_emi_paid = sum(row.emi_paid for row in ledger_rows)
-    total_prepayment_paid = sum(row.prepayment_paid for row in ledger_rows)
-    total_interest_paid = sum((row.interest_charged or 0) for row in ledger_rows)
-    total_principal_paid = sum((row.principal_paid or 0) for row in ledger_rows)
+    total_prepayment_paid = selected_loan.summary_prepayment_paid or sum(row.prepayment_paid for row in ledger_rows)
+    total_interest_paid = selected_loan.summary_interest_paid or sum((row.interest_charged or 0) for row in ledger_rows)
+    total_principal_paid = selected_loan.summary_principal_paid or sum(
+        (row.total_principal_reduced or (row.principal_from_emi or 0) + row.principal_from_prepayment)
+        for row in ledger_rows
+    )
     total_charges_paid = sum(row.charges_paid for row in ledger_rows)
     latest_closing = next((row.closing_outstanding for row in reversed(ledger_rows) if row.closing_outstanding is not None), None)
     inferred_rates = [row.inferred_annual_rate for row in ledger_rows if row.inferred_annual_rate is not None]
     average_inferred_rate = sum(inferred_rates) / len(inferred_rates) if inferred_rates else None
     latest_inferred_rate = inferred_rates[-1] if inferred_rates else None
+    projection = build_loan_projection(selected_loan, ledger_rows, future_monthly_extra_prepayment=recurring_extra_payment)
+    latest_rate_variance = next((row.rate_variance for row in reversed(ledger_rows) if row.rate_variance is not None), None)
 
-    summary_top = st.columns(5)
-    summary_bottom = st.columns(5)
+    summary_top = st.columns(4)
+    summary_middle = st.columns(4)
+    summary_bottom = st.columns(4)
     summary_top[0].metric("Current outstanding", format_inr(latest_closing or selected_loan.outstanding_balance or 0))
     summary_top[1].metric("Total EMI paid", format_inr(total_emi_paid))
-    summary_top[2].metric("Total prepayment paid", format_inr(total_prepayment_paid))
+    summary_top[2].metric("MBK / prepayment paid", format_inr(total_prepayment_paid))
     summary_top[3].metric("Total interest paid", format_inr(total_interest_paid))
-    summary_top[4].metric("Total principal paid", format_inr(total_principal_paid))
-    summary_bottom[0].metric("Total charges paid", format_inr(total_charges_paid))
-    summary_bottom[1].metric("Avg inferred annual rate", f"{average_inferred_rate:.2f}%" if average_inferred_rate is not None else "N/A")
-    summary_bottom[2].metric("Latest inferred annual rate", f"{latest_inferred_rate:.2f}%" if latest_inferred_rate is not None else "N/A")
-    summary_bottom[3].metric("Estimated remaining tenure", f"{analysis.remaining_tenure_months} months")
-    summary_bottom[4].metric("Interest saved", format_inr(analysis.interest_saved))
+    summary_middle[0].metric("Total principal paid", format_inr(total_principal_paid))
+    summary_middle[1].metric("Avg inferred annual rate", f"{average_inferred_rate:.2f}%" if average_inferred_rate is not None else "N/A")
+    summary_middle[2].metric("Latest inferred annual rate", f"{latest_inferred_rate:.2f}%" if latest_inferred_rate is not None else "N/A")
+    summary_middle[3].metric("Base annual rate", f"{float(selected_loan.interest_rate_annual or 0):.2f}%")
+    summary_bottom[0].metric("Latest rate variance", f"{latest_rate_variance:.2f}%" if latest_rate_variance is not None else "N/A")
+    summary_bottom[1].metric(
+        "Estimated remaining tenure",
+        f"{projection.summary.estimated_remaining_tenure_months} months"
+        if projection.summary.estimated_remaining_tenure_months is not None
+        else "N/A",
+    )
+    summary_bottom[2].metric("Future interest estimate", format_inr(projection.summary.estimated_total_future_interest or 0))
+    summary_bottom[3].metric("Prepayment interest saved", format_inr(projection.summary.estimated_interest_saved_by_prepayment))
 
     st.subheader("Detected loan transactions")
     loan_label_by_id = {loan.id: f"{loan.id} | {loan.name}" for loan in all_loans}
@@ -399,11 +497,21 @@ else:
         [
             {
                 "id": item.id,
+                "source_transaction_id": item.transaction_id,
+                "rollback_to_parsed": False,
+                "exclude_from_ledger": item.review_status == "ignored",
                 "loan_link": loan_label_by_id.get(item.loan_id, "Unlinked"),
                 "date": item.transaction_date,
                 "amount": float(item.amount),
+                "direction": item.direction,
                 "type": item.loan_transaction_type,
                 "review_status": item.review_status,
+                "opening_outstanding": float(item.opening_outstanding) if item.opening_outstanding is not None else None,
+                "closing_outstanding": float(item.closing_outstanding) if item.closing_outstanding is not None else None,
+                "interest_component": float(item.interest_component) if item.interest_component is not None else None,
+                "principal_component": float(item.principal_component) if item.principal_component is not None else None,
+                "charges_component": float(item.charges_component) if item.charges_component is not None else None,
+                "provided_annual_rate": float(item.provided_annual_rate) if item.provided_annual_rate is not None else None,
                 "confidence": item.confidence_score,
                 "reason": item.loan_match_reason or "",
                 "description": item.raw_description,
@@ -418,31 +526,98 @@ else:
         edited_transactions_df = st.data_editor(
             transactions_df.set_index("id"),
             use_container_width=True,
-            disabled=["date", "amount", "confidence", "reason", "description"],
+            disabled=["source_transaction_id", "confidence", "reason"],
             column_config={
+                "source_transaction_id": st.column_config.NumberColumn("Source tx", help="Parsed source transaction id, if available."),
+                "rollback_to_parsed": st.column_config.CheckboxColumn(
+                    "Rollback",
+                    help="Restore date, amount, description, direction, and auto loan type from the parsed source transaction.",
+                ),
+                "exclude_from_ledger": st.column_config.CheckboxColumn(
+                    "Exclude",
+                    help="Soft-remove this row from ledger/projection. Uncheck to restore it.",
+                ),
                 "loan_link": st.column_config.SelectboxColumn("Loan", options=loan_link_options),
+                "date": st.column_config.DateColumn("Date"),
+                "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
+                "direction": st.column_config.SelectboxColumn("Direction", options=["debit", "credit"]),
                 "type": st.column_config.SelectboxColumn("Type", options=LOAN_TRANSACTION_TYPES),
                 "review_status": st.column_config.SelectboxColumn("Review", options=REVIEW_STATUSES),
+                "opening_outstanding": st.column_config.NumberColumn("Opening outstanding", format="%.2f"),
+                "closing_outstanding": st.column_config.NumberColumn("Closing outstanding", format="%.2f"),
+                "interest_component": st.column_config.NumberColumn("Interest", format="%.2f"),
+                "principal_component": st.column_config.NumberColumn("Principal", format="%.2f"),
+                "charges_component": st.column_config.NumberColumn("Charges", format="%.2f"),
+                "provided_annual_rate": st.column_config.NumberColumn("Annual rate %", format="%.4f"),
                 "notes": st.column_config.TextColumn("Notes", width="large"),
                 "description": st.column_config.TextColumn("Description", width="large"),
             },
         )
-        if st.button("Save loan transaction review", use_container_width=True):
+        st.caption(
+            "Use Exclude as a reversible remove from calculations. Use Rollback only when the row is linked "
+            "to a parsed source transaction and you want to undo manual edits."
+        )
+        if st.button("Save loan transaction edits", use_container_width=True):
+            changed_count = 0
+            warning_messages: list[str] = []
+            original_transactions_df = transactions_df.set_index("id")
+            tracked_fields = [
+                "loan_link",
+                "date",
+                "amount",
+                "direction",
+                "type",
+                "review_status",
+                "exclude_from_ledger",
+                "opening_outstanding",
+                "closing_outstanding",
+                "interest_component",
+                "principal_component",
+                "charges_component",
+                "provided_annual_rate",
+                "description",
+                "notes",
+            ]
             with session_scope() as session:
                 for transaction_id, edited_row in edited_transactions_df.iterrows():
-                    original_row = transactions_df.set_index("id").loc[transaction_id]
-                    if edited_row.equals(original_row):
+                    original_row = original_transactions_df.loc[transaction_id]
+                    if bool(edited_row.get("rollback_to_parsed")):
+                        if is_blank_editor_value(edited_row.get("source_transaction_id")):
+                            warning_messages.append(f"Transaction {transaction_id} has no parsed source transaction to roll back to.")
+                            continue
+                        revert_loan_transaction_to_source(session=session, loan_transaction_id=int(transaction_id))
+                        changed_count += 1
                         continue
+                    if not any(editor_values_differ(edited_row.get(field), original_row.get(field)) for field in tracked_fields):
+                        continue
+
                     selected_link = edited_row["loan_link"]
+                    edited_review_status = str(edited_row.get("review_status") or "pending")
+                    review_status = "ignored" if bool(edited_row.get("exclude_from_ledger")) else edited_review_status
+                    if review_status == "ignored" and not bool(edited_row.get("exclude_from_ledger")):
+                        review_status = "pending"
                     update_loan_transaction(
                         session=session,
                         loan_transaction_id=int(transaction_id),
                         loan_id=loan_id_by_label.get(selected_link, 0),
+                        transaction_date=parse_editor_date(edited_row["date"]),
+                        raw_description=str(edited_row["description"] or ""),
+                        amount=parse_editor_float(edited_row["amount"]),
+                        direction=str(edited_row["direction"] or "debit"),
                         loan_transaction_type=str(edited_row["type"]),
-                        review_status=str(edited_row["review_status"]),
-                        notes=str(edited_row["notes"] or ""),
+                        review_status=review_status,
+                        opening_outstanding=parse_editor_float(edited_row.get("opening_outstanding")),
+                        closing_outstanding=parse_editor_float(edited_row.get("closing_outstanding")),
+                        interest_component=parse_editor_float(edited_row.get("interest_component")),
+                        principal_component=parse_editor_float(edited_row.get("principal_component")),
+                        charges_component=parse_editor_float(edited_row.get("charges_component")),
+                        provided_annual_rate=parse_editor_float(edited_row.get("provided_annual_rate")),
+                        notes=None if is_blank_editor_value(edited_row.get("notes")) else str(edited_row["notes"]),
                     )
-            st.success("Loan transaction review saved.")
+                    changed_count += 1
+            for message in warning_messages:
+                st.warning(message)
+            st.success(f"Saved {changed_count} loan transaction change(s).")
             st.rerun()
 
     st.subheader("Monthly loan ledger")
@@ -452,14 +627,21 @@ else:
                 "month": row.month,
                 "opening_outstanding": float(row.opening_outstanding) if row.opening_outstanding is not None else None,
                 "emi_paid": float(row.emi_paid),
-                "prepayment_paid": float(row.prepayment_paid),
+                "mbk_prepayment": float(row.prepayment_paid),
                 "interest_charged": float(row.interest_charged) if row.interest_charged is not None else None,
-                "principal_paid": float(row.principal_paid) if row.principal_paid is not None else None,
+                "principal_from_emi": float(row.principal_from_emi) if row.principal_from_emi is not None else None,
+                "principal_from_prepayment": float(row.principal_from_prepayment),
+                "total_principal_reduced": float(row.total_principal_reduced) if row.total_principal_reduced is not None else None,
                 "charges_paid": float(row.charges_paid),
                 "closing_outstanding": float(row.closing_outstanding) if row.closing_outstanding is not None else None,
                 "inferred_annual_rate": float(row.inferred_annual_rate) if row.inferred_annual_rate is not None else None,
+                "base_annual_rate": float(row.base_annual_rate) if row.base_annual_rate is not None else None,
+                "rate_variance": float(row.rate_variance) if row.rate_variance is not None else None,
                 "provided_annual_rate": float(row.provided_annual_rate) if row.provided_annual_rate is not None else None,
                 "rate_source": row.rate_source,
+                "calculation_method": row.calculation_method,
+                "review_status": row.review_status,
+                "manual_override": row.manual_override_used,
                 "confidence": row.confidence_score,
                 "notes": row.calculation_notes,
             }
@@ -472,28 +654,53 @@ else:
         chart_columns = st.columns(2)
         with chart_columns[0]:
             st.subheader("Interest and principal by month")
-            st.bar_chart(ledger_df.set_index("month")[["interest_charged", "principal_paid"]])
+            st.bar_chart(ledger_df.set_index("month")[["interest_charged", "principal_from_emi", "principal_from_prepayment"]])
         with chart_columns[1]:
             st.subheader("EMI vs prepayment")
-            st.bar_chart(ledger_df.set_index("month")[["emi_paid", "prepayment_paid"]])
+            st.bar_chart(ledger_df.set_index("month")[["emi_paid", "mbk_prepayment"]])
 
         trend_columns = st.columns(2)
         with trend_columns[0]:
             st.subheader("Outstanding trend")
-            st.line_chart(ledger_df.set_index("month")[["closing_outstanding"]])
+            st.line_chart(ledger_df.set_index("month")[["opening_outstanding", "closing_outstanding"]])
         with trend_columns[1]:
-            st.subheader("Inferred annual rate trend")
+            st.subheader("Actual rate vs base rate")
             rate_df = ledger_df.dropna(subset=["inferred_annual_rate"])
             if rate_df.empty:
                 st.caption("No inferred rate data yet.")
             else:
-                st.line_chart(rate_df.set_index("month")[["inferred_annual_rate"]])
+                st.line_chart(rate_df.set_index("month")[["inferred_annual_rate", "base_annual_rate"]])
 
         st.dataframe(ledger_df, use_container_width=True, hide_index=True)
-        low_confidence_df = ledger_df[ledger_df["confidence"] < 0.65]
-        st.subheader("Low-confidence months requiring review")
+        actual_projected_df = pd.DataFrame(
+            [
+                {
+                    "month": row.month,
+                    "projected_interest": float(row.projected_interest) if row.projected_interest is not None else None,
+                    "actual_interest": float(row.actual_interest) if row.actual_interest is not None else None,
+                    "interest_difference": float(row.interest_difference) if row.interest_difference is not None else None,
+                    "projected_principal": float(row.projected_principal) if row.projected_principal is not None else None,
+                    "actual_principal": float(row.actual_principal) if row.actual_principal is not None else None,
+                    "principal_difference": float(row.principal_difference) if row.principal_difference is not None else None,
+                    "projected_closing": float(row.projected_closing) if row.projected_closing is not None else None,
+                    "actual_closing": float(row.actual_closing) if row.actual_closing is not None else None,
+                    "impact_of_prepayment": float(row.prepayment_impact) if row.prepayment_impact is not None else None,
+                }
+                for row in projection.actual_vs_projected
+            ]
+        )
+        st.subheader("Actual vs projected")
+        if actual_projected_df.empty:
+            st.caption("No actual/projected rows yet.")
+        else:
+            trend_df = actual_projected_df.set_index("month")[["projected_closing", "actual_closing"]]
+            st.line_chart(trend_df)
+            st.dataframe(actual_projected_df, use_container_width=True, hide_index=True)
+
+        low_confidence_df = ledger_df[(ledger_df["confidence"] < 0.65) | (ledger_df["review_status"] != "ok")]
+        st.subheader("Review table")
         if low_confidence_df.empty:
-            st.caption("No low-confidence ledger months.")
+            st.caption("No low-confidence or review-needed ledger months.")
         else:
             st.dataframe(low_confidence_df, use_container_width=True, hide_index=True)
 
@@ -508,6 +715,9 @@ else:
         override_principal = override_columns_2[0].text_input("Principal paid", placeholder="optional")
         override_charges = override_columns_2[1].text_input("Charges paid", placeholder="optional")
         override_rate = override_columns_2[2].text_input("Annual rate %", placeholder="optional")
+        override_columns_3 = st.columns(2)
+        override_emi = override_columns_3[0].text_input("EMI paid", placeholder="optional")
+        override_prepayment = override_columns_3[1].text_input("MBK/prepayment paid", placeholder="optional")
         override_notes = st.text_area("Override notes")
         override_submitted = st.form_submit_button("Save override and recalculate", use_container_width=True)
 
@@ -522,6 +732,8 @@ else:
                     closing_outstanding=parse_optional_float(override_closing),
                     interest_charged=parse_optional_float(override_interest),
                     principal_paid=parse_optional_float(override_principal),
+                    emi_paid=parse_optional_float(override_emi),
+                    prepayment_paid=parse_optional_float(override_prepayment),
                     charges_paid=parse_optional_float(override_charges),
                     annual_rate=parse_optional_float(override_rate),
                     notes=override_notes or None,
@@ -536,7 +748,14 @@ else:
         rate_columns = st.columns(3)
         rate_effective_date = rate_columns[0].date_input("Effective date", value=date.today())
         rate_name = rate_columns[1].text_input("Rate name", value="Bank-provided loan rate")
-        rate_percent = rate_columns[2].number_input("Rate %", min_value=0.0, value=float(selected_loan.interest_rate_annual or 0), step=0.05)
+        rate_percent = rate_columns[2].number_input(
+            "Rate %",
+            min_value=0.0,
+            value=float(selected_loan.interest_rate_annual)
+            if selected_loan.interest_rate_annual is not None
+            else DEFAULT_BASE_ANNUAL_RATE,
+            step=0.05,
+        )
         source_note = st.text_area("Source note")
         rate_submitted = st.form_submit_button("Add rate event", use_container_width=True)
 

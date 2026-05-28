@@ -35,6 +35,37 @@ Use this file as the compact source of truth before changing categorization, loa
 | Bank Charges | bank charge, SMS fee, maintenance fee | Banking costs |
 | Miscellaneous | fallback | Review queue |
 
+## True Spend And Source Separation
+
+| Rule | Treatment |
+| --- | --- |
+| Credit-card purchase from card statement | Count as true expense |
+| Bank debit to pay credit-card bill | Liability settlement; do not double-count as expense |
+| Loan EMI from bank statement | Debt repayment; split in loan ledger where possible |
+| Loan interest portion | Cost of debt |
+| Loan principal portion | Balance-sheet movement, not normal expense |
+| MBK debit | Loan prepayment principal; separate from EMI interest/principal split |
+| UPI merchant payment | Expense unless marked personal/internal |
+| UPI self/family/internal transfer | Exclude from true spend by default; show in UPI movement if included |
+| Refund | Reduce category spend when linkable |
+| Cashback/reward credit | Adjustment/reward, not income unless user decides |
+| Manual correction | Overrides automatic classification and future analytics |
+
+Derived analytics fields:
+
+| Field | Meaning |
+| --- | --- |
+| `gross_debit` | All debit movement before deduplication |
+| `true_expense` | Spend after removing liability payments, internal transfers, loan principal/prepayment |
+| `liability_payment` | Credit-card bill payments and debt repayment movement |
+| `debt_principal` | Loan principal/prepayment movement |
+| `debt_interest` | Loan/card interest cost |
+| `refund_adjustment` | Refund offset |
+| `cashback_adjustment` | Cashback/reward offset |
+| `net_category_spend` | Category spend after refunds/cashback |
+
+Source filters used by APIs/UI: `bank_statement`, `credit_card_statement`, `upi_export`, `loan_statement`, `all_sources`.
+
 ## Loan Logic
 
 ### Detection
@@ -65,11 +96,17 @@ Use this file as the compact source of truth before changing categorization, loa
 | `emi_paid` | Sum of EMI loan transactions |
 | `prepayment_paid` | Sum of prepayment loan transactions |
 | `interest_charged` | Statement interest or calculated interest |
-| `principal_paid` | Principal reduction excluding prepayment |
+| `principal_from_emi` / `principal_paid` | Principal reduction from EMI only |
+| `principal_from_prepayment` | Principal reduction from MBK/prepayment |
+| `total_principal_reduced` | EMI principal plus prepayment principal, or opening - closing |
 | `charges_paid` | Processing/penal/bounce/insurance/other charges |
 | `closing_outstanding` | Outstanding principal after principal and prepayment |
 | `inferred_monthly_rate` | `interest_charged / opening_outstanding` |
 | `inferred_annual_rate` | `inferred_monthly_rate * 12 * 100` |
+| `base_annual_rate` | User-entered comparison/projection rate |
+| `rate_variance` | Inferred annual rate - base annual rate |
+| `calculation_method` | actual_from_opening_closing, explicit_interest, estimated_using_base_rate, needs_review |
+| `review_status` | ok or needs_review |
 | `rate_source` | inferred, manual, bank_statement, unknown |
 | `confidence_score` | Reliability of calculation |
 | `calculation_notes` | Transparent formula/method |
@@ -78,20 +115,32 @@ Use this file as the compact source of truth before changing categorization, loa
 
 | Case | Formula |
 | --- | --- |
-| Known annual rate | `interest = opening * annual_rate / 1200` |
+| Base-rate estimate | `estimated_interest = opening * base_annual_rate / 1200` |
 | First imported month without statement opening | Estimate opening from original principal, loan start date, annual rate, tenure, and EMI schedule |
-| EMI-only principal | `principal = emi - interest - charges` |
-| Closing from calculated values | `closing = opening - principal - prepayment` |
+| EMI-only principal | `principal_from_emi = emi - interest - charges` |
+| Prepayment principal | `principal_from_prepayment = MBK/prepayment amount` |
+| Total principal | `total_principal_reduced = principal_from_emi + principal_from_prepayment` |
+| Closing from calculated values | `closing = opening - principal_from_emi - prepayment` |
 | Interest from opening/closing | `interest = closing - opening + emi + prepayment - charges` |
-| Principal from opening/closing with explicit interest | `principal = opening - closing - prepayment` |
+| Principal from opening/closing | `principal_from_emi = opening - closing - prepayment` |
 | Monthly rate inference | `monthly_rate = interest / opening` |
 | Annual rate inference | `annual_rate_percent = monthly_rate * 12 * 100` |
+| Rate variance | `rate_variance = inferred_annual_rate - base_annual_rate` |
+
+### Actual vs Projected
+
+- Projected values use opening outstanding, scheduled EMI, and base annual rate.
+- Actual values use uploaded loan transactions and manual overrides.
+- MBK prepayment is never included in EMI interest/principal split.
+- Actual-vs-projected rows show projected/actual interest, principal, closing balance, and prepayment impact.
+- Prepayment savings estimate compares future interest from current outstanding vs a counterfactual outstanding with uploaded prepayments added back.
 
 ### Manual Override Rules
 
 - Monthly manual override applies before calculated values.
 - Override fields replace only provided values.
 - Override annual rate sets `rate_source = manual`.
+- Override EMI and prepayment replace detected monthly sums.
 - Manual transaction reclassification replaces automatic loan transaction type.
 - Imported loan transactions may be relinked from a placeholder/unlinked group to the selected loan profile; affected ledgers are recalculated.
 - Ignored loan transactions are excluded from ledger recalculation.
@@ -103,8 +152,11 @@ Use this file as the compact source of truth before changing categorization, loa
 | Direct statement opening, interest, principal, closing | high |
 | Statement opening/closing plus inferred interest | medium-high |
 | Profile opening plus manual annual rate | medium |
+| Base-rate estimate without actual closing/interest | medium-low |
 | Previous closing carried forward | medium |
 | Missing first opening outstanding | low |
+| Negative principal from EMI | low, needs review |
+| Duplicate EMI in one month | needs review |
 | Unknown loan document debit row | low, needs review |
 
 ## Credit Card Logic

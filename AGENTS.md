@@ -6,7 +6,7 @@
 - It imports local bank, UPI, credit card, and loan statements.
 - It parses CSV, XLSX, and digital PDF files using local libraries only.
 - It normalizes transactions into SQLite and categorizes them with editable rules.
-- It provides Streamlit dashboards for spending, UPI, credit cards, loans, benchmarks, and assistant queries.
+- It provides source-separated analytics for bank, credit card, UPI, loans, all transactions, benchmarks, and assistant queries.
 - It includes deterministic loan ledger logic for EMI, prepayment, interest, principal, and inferred rates.
 - It includes local keyword/deterministic assistant behavior with optional localhost-only Ollama/local embeddings.
 - It must never transmit financial data outside the local machine.
@@ -78,7 +78,7 @@ python scripts/build_agent_context.py
 | Upload/parsing | `app/services/documents.py`, `app/services/parsers/`, `dashboard/pages/1_Upload.py` | Local file ingestion, statement parsing, and safe reprocessing of existing uploads |
 | Categorization | `app/services/categorization/rules.py`, `app/services/category_rules.py` | Rule-based categories and editable rules |
 | Transactions | `app/services/transactions.py`, `dashboard/pages/2_Transactions.py` | Manual correction and bulk updates |
-| Dashboard | `app/services/analytics/overview.py`, `dashboard/pages/3_Dashboard.py` | Overview metrics and benchmark comparison |
+| Analytics | `app/services/analytics/`, `app/routers/analytics.py`, `dashboard/pages/3_Dashboard.py`, `dashboard/pages/10_Bank_Analysis.py`, `dashboard/pages/11_All_Transactions.py` | Source-separated bank/card/UPI/all-sources analytics, true-expense deduplication, cashflow, recurring, anomaly, budget, merchant/category reports |
 | Loans | `app/services/loans/`, `dashboard/pages/4_Loans.py`, `app/routers/loans.py` | Loan detection, import relinking, ledger, amortization, overrides |
 | Credit cards | `app/services/credit_cards/analysis.py`, `app/services/credit_cards/service.py`, `dashboard/pages/5_Credit_Cards.py` | Card profiles, statement tags, EMI/no-cost EMI, GST/fees, UPI-card analysis, manual review |
 | UPI | `app/services/analytics/upi.py`, `dashboard/pages/6_UPI_Analysis.py` | UPI receiver, spend, recurring analysis |
@@ -117,10 +117,11 @@ python scripts/build_agent_context.py
 | CSV/XLSX/PDF parsing | Implemented for common digital statements |
 | Categorization rules | Implemented, editable locally |
 | Hyderabad benchmarks | Implemented, editable locally |
-| Loan ledger | Implemented with MBK/Loan Account Payment prepayment, LOAN RECOVERY EMI, sorted profiles/transactions, profile-schedule first opening, import summaries/relinking, inferred rates, overrides |
+| Loan ledger | Implemented with EMI/prepayment separation, floating-rate monthly actuals, base-rate variance, actual-vs-projected tables, profile-schedule first opening, import summaries/relinking, overrides |
 | Credit card analysis | Implemented: card profiles, Normal/EMI/UPI-only/Mixed statement tags, EMI plans, no-cost EMI verification, GST/processing-fee split, UPI-card separation, manual review |
 | UPI analysis | Implemented for receiver extraction, daily spend, recurring payments |
 | Upload reprocessing | Implemented for selected/all stored uploads so parser/logic changes reload normalized and derived rows |
+| Professional analytics | Implemented with unified response shape, bank/card/UPI-specific APIs, source filters, true-expense logic, recurring/anomaly/budget reports, and all-transactions correction/export |
 | Local assistant | Implemented deterministic handlers, keyword search, optional local embeddings/Ollama |
 | App memory | Schema groundwork in `assistant_memory`; future behavior must stay non-sensitive |
 

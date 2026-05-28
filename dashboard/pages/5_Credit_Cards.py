@@ -24,6 +24,7 @@ from app.services.credit_cards import (
     update_credit_card_transaction_override,
     update_emi_plan_review,
 )
+from app.services.analytics import AnalyticsFilters, get_credit_card_analytics
 from common import default_period, format_inr, initialize_page, render_sidebar_status, session_scope
 
 
@@ -107,6 +108,16 @@ with session_scope() as session:
         analysis_mode=ANALYSIS_MODE_LABELS[analysis_mode_label],
         card_id=selected_card.id if selected_card else None,
     )
+    card_analytics = get_credit_card_analytics(
+        session,
+        AnalyticsFilters(
+            start_date=start_date,
+            end_date=end_date,
+            source_type="credit_card_statement",
+            card_id=selected_card.id if selected_card else None,
+            include_internal_transfers=True,
+        ),
+    )
 
 metric_columns = st.columns(5)
 metric_columns[0].metric("Monthly card spend", format_inr(analysis.total_purchase_spend))
@@ -136,6 +147,18 @@ plan_metric_columns[3].metric(
     "Plans needing review",
     len([plan for plan in analysis.emi_plans if plan.lifecycle_status == "needs_review" or plan.no_cost_verification_status in {"unknown", "needs_review"}]),
 )
+
+with st.expander("Unified credit-card spend analytics", expanded=False):
+    analytics_summary = card_analytics["summary"]
+    analytics_columns = st.columns(4)
+    analytics_columns[0].metric("True card expense", format_inr(analytics_summary["true_expense"]))
+    analytics_columns[1].metric("Card payments received", format_inr(analytics_summary.get("card_payments_received", 0)))
+    analytics_columns[2].metric("UPI-only card spend", format_inr(analytics_summary.get("upi_only_card_spend", 0)))
+    analytics_columns[3].metric("Extra charges", format_inr(analytics_summary.get("extra_charges", 0)))
+    card_wise_df = pd.DataFrame(card_analytics["charts"].get("card_wise_spend", []))
+    if not card_wise_df.empty:
+        st.subheader("Card-wise spend")
+        st.bar_chart(card_wise_df.set_index("card_id")[["amount"]])
 
 if not analysis.classified_transactions:
     st.info("No credit card transactions matched the current filters. Upload a credit card statement or broaden the filters.")

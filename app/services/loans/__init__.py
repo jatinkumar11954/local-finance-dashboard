@@ -8,8 +8,17 @@ from app.services.loans.calculator import (
     generate_amortization_schedule,
     months_between,
 )
+from app.services.loans.constants import DEFAULT_BASE_ANNUAL_RATE
 from app.services.loans.detection import LoanClassification, classify_loan_transaction
 from app.services.loans.ledger import list_loan_ledger, recalculate_loan_ledger
+from app.services.loans.projection import (
+    LoanActualProjectedRow,
+    LoanProjectionResult,
+    LoanProjectionSummary,
+    build_actual_vs_projected_rows,
+    build_loan_projection,
+    build_projection_summary,
+)
 from app.services.loans.service import (
     LoanImportSummary,
     analyze_saved_loan,
@@ -18,6 +27,7 @@ from app.services.loans.service import (
     list_loan_transactions,
     list_loans,
     relink_loan_transactions,
+    revert_loan_transaction_to_source,
     save_loan,
     save_loan_manual_override,
     save_loan_rate_event,
@@ -30,6 +40,10 @@ __all__ = [
     "LoanClassification",
     "LoanImportSummary",
     "LoanPrepayment",
+    "LoanActualProjectedRow",
+    "LoanProjectionResult",
+    "LoanProjectionSummary",
+    "DEFAULT_BASE_ANNUAL_RATE",
     "add_months",
     "analyze_home_loan",
     "analyze_saved_loan",
@@ -37,6 +51,9 @@ __all__ = [
     "classify_loan_transaction",
     "detect_and_store_loan_transactions",
     "generate_amortization_schedule",
+    "build_actual_vs_projected_rows",
+    "build_loan_projection",
+    "build_projection_summary",
     "list_loan_ledger",
     "list_loan_import_summaries",
     "list_loan_transactions",
@@ -44,6 +61,7 @@ __all__ = [
     "months_between",
     "recalculate_loan_ledger",
     "relink_loan_transactions",
+    "revert_loan_transaction_to_source",
     "save_loan",
     "save_loan_manual_override",
     "save_loan_rate_event",

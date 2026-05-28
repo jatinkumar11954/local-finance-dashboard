@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+import math
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -21,6 +22,9 @@ from app.services.loans.detection import classify_loan_transaction
 from app.services.loans.calculator import analyze_home_loan
 from app.services.loans.ledger import month_start, recalculate_loan_ledger
 from app.services.parsers.models import ParsedTransactionRow
+
+
+UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,10 @@ def save_loan(
     tenure_months: int,
     emi_amount: float,
     outstanding_balance: float | None = None,
+    summary_total_paid: float | None = None,
+    summary_interest_paid: float | None = None,
+    summary_principal_paid: float | None = None,
+    summary_prepayment_paid: float | None = None,
     lender_name: str | None = None,
     bank_name: str | None = None,
     masked_loan_account_number: str | None = None,
@@ -136,6 +144,10 @@ def save_loan(
     loan.tenure_months = tenure_months
     loan.emi_amount = Decimal(str(emi_amount))
     loan.outstanding_balance = Decimal(str(outstanding_balance)) if outstanding_balance is not None else None
+    loan.summary_total_paid = Decimal(str(summary_total_paid)) if summary_total_paid is not None else None
+    loan.summary_interest_paid = Decimal(str(summary_interest_paid)) if summary_interest_paid is not None else None
+    loan.summary_principal_paid = Decimal(str(summary_principal_paid)) if summary_principal_paid is not None else None
+    loan.summary_prepayment_paid = Decimal(str(summary_prepayment_paid)) if summary_prepayment_paid is not None else None
     loan.source_document_id = source_document_id
     loan.notes = notes
 
@@ -298,24 +310,62 @@ def _loan_for_auto_mapping(session: Session, document: Document) -> Loan | None:
 def update_loan_transaction(
     session: Session,
     loan_transaction_id: int,
-    loan_id: int | None = None,
-    loan_transaction_type: str | None = None,
-    review_status: str | None = None,
-    notes: str | None = None,
+    loan_id=UNSET,
+    transaction_date=UNSET,
+    raw_description=UNSET,
+    amount=UNSET,
+    direction=UNSET,
+    loan_transaction_type=UNSET,
+    review_status=UNSET,
+    opening_outstanding=UNSET,
+    closing_outstanding=UNSET,
+    interest_component=UNSET,
+    principal_component=UNSET,
+    charges_component=UNSET,
+    provided_annual_rate=UNSET,
+    notes=UNSET,
 ) -> LoanTransaction:
     loan_transaction = session.get(LoanTransaction, loan_transaction_id)
     if loan_transaction is None:
         raise ValueError(f"Loan transaction {loan_transaction_id} was not found.")
 
     old_loan_id = loan_transaction.loan_id
-    if loan_id is not None:
+    if loan_id is not UNSET:
         loan_transaction.loan_id = loan_id if loan_id > 0 else None
-    if loan_transaction_type:
+    if transaction_date is not UNSET:
+        parsed_date = _parse_date(transaction_date)
+        if parsed_date is None:
+            raise ValueError("Transaction date cannot be blank.")
+        loan_transaction.transaction_date = parsed_date
+    if raw_description is not UNSET:
+        if _is_blank(raw_description):
+            raise ValueError("Description cannot be blank.")
+        loan_transaction.raw_description = str(raw_description)
+    if amount is not UNSET:
+        parsed_amount = _decimal_or_none(amount)
+        if parsed_amount is None:
+            raise ValueError("Amount cannot be blank.")
+        loan_transaction.amount = parsed_amount
+    if direction is not UNSET and not _is_blank(direction):
+        loan_transaction.direction = str(direction)
+    if loan_transaction_type is not UNSET and not _is_blank(loan_transaction_type):
         loan_transaction.loan_transaction_type = loan_transaction_type
-    if review_status:
+    if review_status is not UNSET and not _is_blank(review_status):
         loan_transaction.review_status = review_status
-    if notes is not None:
-        loan_transaction.notes = notes
+    if opening_outstanding is not UNSET:
+        loan_transaction.opening_outstanding = _decimal_or_none(opening_outstanding)
+    if closing_outstanding is not UNSET:
+        loan_transaction.closing_outstanding = _decimal_or_none(closing_outstanding)
+    if interest_component is not UNSET:
+        loan_transaction.interest_component = _decimal_or_none(interest_component)
+    if principal_component is not UNSET:
+        loan_transaction.principal_component = _decimal_or_none(principal_component)
+    if charges_component is not UNSET:
+        loan_transaction.charges_component = _decimal_or_none(charges_component)
+    if provided_annual_rate is not UNSET:
+        loan_transaction.provided_annual_rate = _decimal_or_none(provided_annual_rate)
+    if notes is not UNSET:
+        loan_transaction.notes = None if _is_blank(notes) else str(notes)
 
     session.add(
         AuditLog(
@@ -338,6 +388,55 @@ def update_loan_transaction(
     return loan_transaction
 
 
+def revert_loan_transaction_to_source(session: Session, loan_transaction_id: int) -> LoanTransaction:
+    loan_transaction = session.get(LoanTransaction, loan_transaction_id)
+    if loan_transaction is None:
+        raise ValueError(f"Loan transaction {loan_transaction_id} was not found.")
+    if loan_transaction.transaction_id is None:
+        raise ValueError("This loan transaction is not linked to a parsed source transaction.")
+
+    source = session.get(Transaction, loan_transaction.transaction_id)
+    if source is None:
+        raise ValueError("The linked source transaction was not found.")
+
+    old_loan_id = loan_transaction.loan_id
+    classification = classify_loan_transaction(
+        description=source.raw_description,
+        amount=source.amount,
+        transaction_type=source.transaction_type,
+        document_type=None,
+    )
+    loan_transaction.transaction_date = source.date
+    loan_transaction.raw_description = source.raw_description
+    loan_transaction.amount = source.amount
+    loan_transaction.direction = source.transaction_type
+    loan_transaction.loan_transaction_type = classification.loan_transaction_type if classification else "unknown"
+    loan_transaction.loan_match_reason = classification.loan_match_reason if classification else "Reverted to parsed source transaction."
+    loan_transaction.confidence_score = classification.confidence_score if classification else min(loan_transaction.confidence_score, 0.5)
+    loan_transaction.review_status = "pending"
+    loan_transaction.notes = "Reverted to parsed source transaction."
+
+    session.add(
+        AuditLog(
+            action="loan_transaction_reverted",
+            entity_type="loan_transaction",
+            entity_id=str(loan_transaction.id),
+            details={
+                "loan_id": loan_transaction.loan_id,
+                "source_transaction_id": source.id,
+                "loan_transaction_type": loan_transaction.loan_transaction_type,
+            },
+        )
+    )
+    session.commit()
+
+    affected_loan_ids = {loan_id for loan_id in [old_loan_id, loan_transaction.loan_id] if loan_id}
+    for affected_loan_id in affected_loan_ids:
+        recalculate_loan_ledger(session, affected_loan_id)
+    session.refresh(loan_transaction)
+    return loan_transaction
+
+
 def save_loan_manual_override(
     session: Session,
     loan_id: int,
@@ -346,6 +445,8 @@ def save_loan_manual_override(
     closing_outstanding: float | None = None,
     interest_charged: float | None = None,
     principal_paid: float | None = None,
+    emi_paid: float | None = None,
+    prepayment_paid: float | None = None,
     charges_paid: float | None = None,
     annual_rate: float | None = None,
     notes: str | None = None,
@@ -365,6 +466,8 @@ def save_loan_manual_override(
     override.closing_outstanding = Decimal(str(closing_outstanding)) if closing_outstanding is not None else None
     override.interest_charged = Decimal(str(interest_charged)) if interest_charged is not None else None
     override.principal_paid = Decimal(str(principal_paid)) if principal_paid is not None else None
+    override.emi_paid = Decimal(str(emi_paid)) if emi_paid is not None else None
+    override.prepayment_paid = Decimal(str(prepayment_paid)) if prepayment_paid is not None else None
     override.charges_paid = Decimal(str(charges_paid)) if charges_paid is not None else None
     override.annual_rate = Decimal(str(annual_rate)) if annual_rate is not None else None
     override.notes = notes
@@ -373,6 +476,32 @@ def save_loan_manual_override(
     recalculate_loan_ledger(session, loan_id)
     session.refresh(override)
     return override
+
+
+def _is_blank(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, float):
+        return math.isnan(value)
+    return False
+
+
+def _decimal_or_none(value) -> Decimal | None:
+    if _is_blank(value):
+        return None
+    return Decimal(str(value))
+
+
+def _parse_date(value) -> date | None:
+    if _is_blank(value):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
 
 
 def save_loan_rate_event(

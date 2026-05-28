@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.models.entities import Document, Loan, LoanTransaction
+from app.models.entities import Document, Loan, LoanTransaction, Transaction
 from app.services.documents import ingest_document_bytes
 from app.services.loans import (
     LoanPrepayment,
@@ -18,6 +18,8 @@ from app.services.loans import (
     list_loan_import_summaries,
     recalculate_loan_ledger,
     relink_loan_transactions,
+    build_loan_projection,
+    revert_loan_transaction_to_source,
     save_loan_manual_override,
     update_loan_transaction,
 )
@@ -90,7 +92,12 @@ def test_monthly_ledger_emi_only_with_known_rate(db_session):
     assert ledger[0].interest_charged == Decimal("10000.00")
     assert ledger[0].principal_paid == Decimal("40000.00")
     assert ledger[0].closing_outstanding == Decimal("960000.00")
-    assert ledger[0].inferred_annual_rate == Decimal("12.000000")
+    assert ledger[0].principal_from_emi == Decimal("40000.00")
+    assert ledger[0].principal_from_prepayment == Decimal("0.00")
+    assert ledger[0].total_principal_reduced == Decimal("40000.00")
+    assert ledger[0].inferred_annual_rate is None
+    assert ledger[0].base_annual_rate == Decimal("12.0000")
+    assert ledger[0].calculation_method == "estimated_using_base_rate"
     assert ledger[0].rate_source == "manual"
 
 
@@ -106,6 +113,9 @@ def test_monthly_ledger_emi_and_mbk_prepayment_same_month(db_session):
     assert ledger[0].prepayment_paid == Decimal("100000.00")
     assert ledger[0].interest_charged == Decimal("10000.00")
     assert ledger[0].principal_paid == Decimal("40000.00")
+    assert ledger[0].principal_from_emi == Decimal("40000.00")
+    assert ledger[0].principal_from_prepayment == Decimal("100000.00")
+    assert ledger[0].total_principal_reduced == Decimal("140000.00")
     assert ledger[0].closing_outstanding == Decimal("860000.00")
 
 
@@ -146,6 +156,90 @@ def test_monthly_ledger_uses_explicit_interest_and_infers_rate(db_session):
     assert ledger[0].principal_paid == Decimal("41000.00")
     assert ledger[0].inferred_monthly_rate == Decimal("0.01000000")
     assert ledger[0].inferred_annual_rate == Decimal("12.000000")
+    assert ledger[0].calculation_method == "explicit_interest"
+
+
+def test_monthly_ledger_opening_closing_with_prepayment_calculates_actual_split(db_session):
+    loan = _create_test_loan(db_session, outstanding=900000, annual_rate=7.35)
+    db_session.add(
+        _loan_transaction(
+            loan,
+            "emi",
+            50000,
+            date(2026, 5, 5),
+            "LOAN RECOVERY EMI",
+            opening_outstanding=Decimal("900000"),
+            closing_outstanding=Decimal("760000"),
+        )
+    )
+    db_session.add(_loan_transaction(loan, "prepayment", 100000, date(2026, 5, 10), "MBK LOAN PREPAYMENT"))
+    db_session.commit()
+
+    ledger = recalculate_loan_ledger(db_session, loan.id)
+
+    assert ledger[0].interest_charged == Decimal("10000.00")
+    assert ledger[0].principal_from_emi == Decimal("40000.00")
+    assert ledger[0].principal_from_prepayment == Decimal("100000.00")
+    assert ledger[0].total_principal_reduced == Decimal("140000.00")
+    assert ledger[0].calculation_method == "actual_from_opening_closing"
+
+
+def test_monthly_ledger_prepayment_principal_component_is_not_emi_principal(db_session):
+    loan = _create_test_loan(db_session, outstanding=1000000, annual_rate=12)
+    db_session.add(
+        _loan_transaction(
+            loan,
+            "emi",
+            50000,
+            date(2026, 5, 5),
+            "LOAN RECOVERY EMI",
+            opening_outstanding=Decimal("1000000"),
+            interest_component=Decimal("10000"),
+            principal_component=Decimal("40000"),
+        )
+    )
+    db_session.add(
+        _loan_transaction(
+            loan,
+            "prepayment",
+            100000,
+            date(2026, 5, 10),
+            "MBK LOAN PREPAYMENT",
+            principal_component=Decimal("100000"),
+        )
+    )
+    db_session.commit()
+
+    ledger = recalculate_loan_ledger(db_session, loan.id)
+
+    assert ledger[0].interest_charged == Decimal("10000.00")
+    assert ledger[0].principal_from_emi == Decimal("40000.00")
+    assert ledger[0].principal_from_prepayment == Decimal("100000.00")
+    assert ledger[0].total_principal_reduced == Decimal("140000.00")
+    assert ledger[0].closing_outstanding == Decimal("860000.00")
+
+
+def test_monthly_ledger_rate_variance_against_base_rate(db_session):
+    loan = _create_test_loan(db_session, outstanding=1000000, annual_rate=12)
+    db_session.add(
+        _loan_transaction(
+            loan,
+            "interest",
+            8000,
+            date(2026, 5, 1),
+            "LOAN INTEREST",
+            opening_outstanding=Decimal("1000000"),
+        )
+    )
+    db_session.add(_loan_transaction(loan, "emi", 50000, date(2026, 5, 5), "LOAN RECOVERY EMI"))
+    db_session.commit()
+
+    ledger = recalculate_loan_ledger(db_session, loan.id)
+
+    assert ledger[0].inferred_annual_rate == Decimal("9.600000")
+    assert ledger[0].base_annual_rate == Decimal("12.0000")
+    assert ledger[0].rate_variance == Decimal("-2.400000")
+    assert "lower than base estimate" in ledger[0].calculation_notes
 
 
 def test_monthly_ledger_marks_missing_opening_balance_low_confidence(db_session):
@@ -194,7 +288,71 @@ def test_manual_override_takes_precedence(db_session):
     assert ledger[0].closing_outstanding == Decimal("949000.00")
     assert ledger[0].provided_annual_rate == Decimal("10.9000")
     assert ledger[0].rate_source == "manual"
+    assert ledger[0].manual_override_used is True
     assert ledger[0].confidence_score >= 0.85
+
+
+def test_manual_override_can_replace_emi_and_prepayment_amounts(db_session):
+    loan = _create_test_loan(db_session)
+    db_session.add(_loan_transaction(loan, "emi", 50000, date(2026, 5, 5), "LOAN RECOVERY EMI"))
+    db_session.add(_loan_transaction(loan, "prepayment", 100000, date(2026, 5, 10), "MBK LOAN PREPAYMENT"))
+    db_session.commit()
+
+    save_loan_manual_override(
+        db_session,
+        loan_id=loan.id,
+        month=date(2026, 5, 1),
+        opening_outstanding=1000000,
+        closing_outstanding=900000,
+        interest_charged=7000,
+        emi_paid=45000,
+        prepayment_paid=60000,
+        notes="Corrected imported rows",
+    )
+
+    ledger = list_loan_ledger(db_session, loan.id)
+    assert ledger[0].emi_paid == Decimal("45000.00")
+    assert ledger[0].prepayment_paid == Decimal("60000.00")
+    assert ledger[0].principal_from_emi == Decimal("38000.00")
+    assert ledger[0].principal_from_prepayment == Decimal("60000.00")
+
+
+def test_negative_principal_from_emi_marks_review(db_session):
+    loan = _create_test_loan(db_session)
+    db_session.add(
+        _loan_transaction(
+            loan,
+            "emi",
+            20000,
+            date(2026, 5, 5),
+            "LOAN RECOVERY EMI",
+            opening_outstanding=Decimal("1000000"),
+            closing_outstanding=Decimal("950000"),
+        )
+    )
+    db_session.add(_loan_transaction(loan, "prepayment", 100000, date(2026, 5, 10), "MBK LOAN PREPAYMENT"))
+    db_session.commit()
+
+    ledger = recalculate_loan_ledger(db_session, loan.id)
+
+    assert ledger[0].principal_from_emi == Decimal("-50000.00")
+    assert ledger[0].review_status == "needs_review"
+    assert "negative_principal_from_emi" in ledger[0].calculation_notes
+
+
+def test_projection_compares_actual_vs_base_and_estimates_prepayment_savings(db_session):
+    loan = _create_test_loan(db_session, outstanding=1000000, annual_rate=12)
+    db_session.add(_loan_transaction(loan, "emi", 50000, date(2026, 5, 5), "LOAN RECOVERY EMI"))
+    db_session.add(_loan_transaction(loan, "prepayment", 100000, date(2026, 5, 10), "MBK LOAN PREPAYMENT"))
+    db_session.commit()
+    ledger = recalculate_loan_ledger(db_session, loan.id)
+
+    projection = build_loan_projection(loan, ledger)
+
+    assert projection.actual_vs_projected[0].projected_interest == Decimal("10000.00")
+    assert projection.actual_vs_projected[0].prepayment_impact == Decimal("100000.00")
+    assert projection.summary.estimated_total_future_interest is not None
+    assert projection.summary.estimated_interest_saved_by_prepayment > Decimal("0.00")
 
 
 def test_updating_loan_transaction_recalculates_ledger(db_session):
@@ -209,6 +367,83 @@ def test_updating_loan_transaction_recalculates_ledger(db_session):
     update_loan_transaction(db_session, prepayment.id, review_status="ignored")
 
     assert list_loan_ledger(db_session, loan.id)[0].closing_outstanding == Decimal("960000.00")
+
+
+def test_editing_loan_transaction_amount_recalculates_ledger(db_session):
+    loan = _create_test_loan(db_session)
+    db_session.add(_loan_transaction(loan, "emi", 50000, date(2026, 5, 5), "LOAN RECOVERY EMI"))
+    prepayment = _loan_transaction(loan, "prepayment", 100000, date(2026, 5, 10), "MBK LOAN PREPAYMENT")
+    db_session.add(prepayment)
+    db_session.commit()
+    recalculate_loan_ledger(db_session, loan.id)
+
+    update_loan_transaction(db_session, prepayment.id, amount=60000)
+
+    ledger = list_loan_ledger(db_session, loan.id)
+    db_session.refresh(prepayment)
+    assert prepayment.amount == Decimal("60000")
+    assert ledger[0].prepayment_paid == Decimal("60000.00")
+    assert ledger[0].principal_from_emi == Decimal("40000.00")
+    assert ledger[0].closing_outstanding == Decimal("900000.00")
+
+
+def test_ignored_loan_transaction_can_be_restored(db_session):
+    loan = _create_test_loan(db_session)
+    db_session.add(_loan_transaction(loan, "emi", 50000, date(2026, 5, 5), "LOAN RECOVERY EMI"))
+    prepayment = _loan_transaction(loan, "prepayment", 100000, date(2026, 5, 10), "MBK LOAN PREPAYMENT")
+    db_session.add(prepayment)
+    db_session.commit()
+
+    update_loan_transaction(db_session, prepayment.id, review_status="ignored")
+    assert list_loan_ledger(db_session, loan.id)[0].prepayment_paid == Decimal("0.00")
+
+    update_loan_transaction(db_session, prepayment.id, review_status="pending")
+
+    ledger = list_loan_ledger(db_session, loan.id)
+    db_session.refresh(prepayment)
+    assert prepayment.review_status == "pending"
+    assert ledger[0].prepayment_paid == Decimal("100000.00")
+    assert ledger[0].closing_outstanding == Decimal("860000.00")
+
+
+def test_revert_loan_transaction_to_source_rolls_back_manual_edit(db_session):
+    loan = _create_test_loan(db_session)
+    source = Transaction(
+        date=date(2026, 5, 10),
+        description="MBK HOME LOAN PREPAYMENT LAN4455",
+        raw_description="MBK HOME LOAN PREPAYMENT LAN4455",
+        amount=Decimal("100000"),
+        transaction_type="debit",
+        account_source="Primary Account",
+        payment_mode="netbanking",
+        merchant_name="Example Bank",
+        category="Loan Prepayment",
+        confidence_score=0.9,
+    )
+    db_session.add(source)
+    db_session.commit()
+    loan_transaction = LoanTransaction(
+        loan_id=loan.id,
+        transaction_id=source.id,
+        transaction_date=date(2026, 5, 11),
+        raw_description="Wrong charge row",
+        amount=Decimal("1234"),
+        direction="debit",
+        loan_transaction_type="charge",
+        loan_match_reason="manual edit",
+        confidence_score=0.4,
+        review_status="ignored",
+    )
+    db_session.add(loan_transaction)
+    db_session.commit()
+
+    reverted = revert_loan_transaction_to_source(db_session, loan_transaction.id)
+
+    assert reverted.transaction_date == date(2026, 5, 10)
+    assert reverted.raw_description == "MBK HOME LOAN PREPAYMENT LAN4455"
+    assert reverted.amount == Decimal("100000.00")
+    assert reverted.loan_transaction_type == "prepayment"
+    assert reverted.review_status == "pending"
 
 
 def test_manual_transaction_reclassification_takes_precedence(db_session):
@@ -296,8 +531,9 @@ def test_loan_statement_upload_creates_placeholder_loan_and_ledger(db_session):
     assert document.document_type == "loan_statement"
     assert loan.name.startswith("Loan from")
     assert {item.loan_transaction_type for item in loan_transactions} >= {"emi", "prepayment", "processing_fee"}
-    assert len(ledger) == 2
-    assert ledger[0].rate_source == "bank_statement"
+    assert len(ledger) == 4
+    assert ledger[0].review_status == "needs_review"
+    assert ledger[1].rate_source == "bank_statement"
 
 
 def test_loan_statement_can_be_auto_detected_from_content(db_session):

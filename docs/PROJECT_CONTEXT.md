@@ -12,7 +12,8 @@ Build a fully local personal finance dashboard that imports statements, normaliz
 | Transactions | Normalized table with review/edit flows |
 | Categorization | Rule-based engine plus editable rule UI |
 | Benchmarks | Hyderabad benchmark ranges in local SQLite/JSON seed |
-| Dashboard | Income, expenses, savings, categories, merchants, trends |
+| Analytics | Source-separated bank/card/UPI/loan/all-sources services and APIs with true-expense deduplication |
+| Dashboard | Overview, bank analysis, credit-card analysis, UPI analysis, all-transactions analysis, benchmarks |
 | Loans | Profiles, loan statement routing, MBK prepayment, LOAN RECOVERY EMI, monthly ledger, overrides |
 | Credit cards | Card profiles, statement tags, EMI plans, no-cost EMI verification, GST/fee separation, UPI-only card analysis |
 | UPI | Receiver extraction, daily spend, top receivers, repeated payments |
@@ -32,6 +33,8 @@ Build a fully local personal finance dashboard that imports statements, normaliz
 | Ask local assistant | `dashboard/pages/7_Assistant.py` |
 | Reset/settings | `dashboard/pages/8_Settings.py` |
 | Rules/benchmarks | `dashboard/pages/9_Rules_and_Benchmarks.py` |
+| Bank-only analytics | `dashboard/pages/10_Bank_Analysis.py` |
+| Unified transaction center | `dashboard/pages/11_All_Transactions.py` |
 
 ## Data Ingestion Flow
 
@@ -76,19 +79,33 @@ Build a fully local personal finance dashboard that imports statements, normaliz
 - Manual transaction corrections should be treated as higher priority than automatic classification.
 - Reapply rules through local API/UI only.
 
+## Analytics Flow
+
+| Layer | Behavior |
+| --- | --- |
+| Source typing | Derive `bank_statement`, `credit_card_statement`, `upi_export`, `loan_statement`, or `manual` from document/card/loan links |
+| Services | `app/services/analytics/` returns shared dictionaries for FastAPI and Streamlit |
+| APIs | `/api/analytics/*`, `/api/analytics/bank/*`, `/api/analytics/credit-cards/*`, `/api/analytics/upi/*` |
+| True expense | Card purchases count as expenses; bank card payments are liability settlement, not duplicate expense |
+| Debt split | Loan EMI/prepayment is debt movement; loan/card interest and fees are cost |
+| UPI scope | UPI dashboard combines bank UPI, UPI exports, and UPI-only card statements |
+| Reviews | All Transactions page can edit category, merchant, transfer/exclude flags, and export filtered CSV locally |
+| Reports | Monthly trend, source comparison, category/merchant, daily spend, cashflow, recurring, anomaly, budget/benchmark |
+
 ## Loan Analysis Flow
 
 | Stage | Details |
 | --- | --- |
 | Detection | `MBK` debit and `Loan Account Payment(s)` debit = prepayment; `LOAN RECOVERY`/`LOAN REC` = EMI |
 | Mapping | Auto-link if one loan exists; else review/link manually |
-| Ledger | Month-level EMI, prepayment, interest, principal, charges, closing; sorted by month |
+| Ledger | Month-level EMI, MBK/prepayment, interest, EMI principal, prepayment principal, total principal, charges, closing; sorted by month |
 | First opening | Statement opening wins; otherwise estimate first imported month from profile schedule when principal/start/rate/EMI exist |
-| Rates | Infer annual rate from `interest / opening * 12 * 100` when data exists |
-| Overrides | Manual monthly override wins over calculated values |
+| Rates | Infer annual rate from `interest / opening * 12 * 100`; compare against user-entered base annual rate |
+| Actual vs projected | Compares actual ledger against base-rate projection and estimates prepayment impact |
+| Overrides | Manual monthly override wins over calculated values, including EMI/prepayment overrides |
 | Import summary | Loan page shows detected transaction counts, ledger months, EMI, MBK/prepayment, interest, current outstanding |
 | Relink | Loan page can move imported transactions from placeholder/unlinked groups to the selected profile and recalculate |
-| Confidence | Low when opening/rate/statement data is missing; surfaced in UI |
+| Confidence | Low when opening/rate/statement data is missing, principal-from-EMI is negative, duplicate EMI exists, or rate is abnormal; surfaced in UI |
 
 ## Credit Card Analysis Flow
 

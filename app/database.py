@@ -88,6 +88,10 @@ def _apply_sqlite_schema_extensions(engine: Engine) -> None:
         "bank_name": "VARCHAR(120)",
         "masked_loan_account_number": "VARCHAR(32)",
         "rate_type": "VARCHAR(20) NOT NULL DEFAULT 'unknown'",
+        "summary_total_paid": "NUMERIC(14, 2)",
+        "summary_interest_paid": "NUMERIC(14, 2)",
+        "summary_principal_paid": "NUMERIC(14, 2)",
+        "summary_prepayment_paid": "NUMERIC(14, 2)",
         "source_document_id": "INTEGER",
     }
 
@@ -95,6 +99,35 @@ def _apply_sqlite_schema_extensions(engine: Engine) -> None:
         for column_name, column_sql in required_loan_columns.items():
             if column_name not in loan_columns:
                 connection.execute(text(f"ALTER TABLE loans ADD COLUMN {column_name} {column_sql}"))
+
+    if "loan_monthly_ledger" in inspector.get_table_names():
+        ledger_columns = {column["name"] for column in inspector.get_columns("loan_monthly_ledger")}
+        required_ledger_columns = {
+            "principal_from_emi": "NUMERIC(14, 2)",
+            "principal_from_prepayment": "NUMERIC(14, 2) NOT NULL DEFAULT 0",
+            "total_principal_reduced": "NUMERIC(14, 2)",
+            "base_annual_rate": "NUMERIC(8, 4)",
+            "rate_variance": "NUMERIC(10, 6)",
+            "rate_variance_percent": "NUMERIC(10, 6)",
+            "calculation_method": "VARCHAR(60) NOT NULL DEFAULT 'unknown'",
+            "manual_override_used": "BOOLEAN NOT NULL DEFAULT 0",
+            "review_status": "VARCHAR(40) NOT NULL DEFAULT 'ok'",
+        }
+        with engine.begin() as connection:
+            for column_name, column_sql in required_ledger_columns.items():
+                if column_name not in ledger_columns:
+                    connection.execute(text(f"ALTER TABLE loan_monthly_ledger ADD COLUMN {column_name} {column_sql}"))
+
+    if "loan_manual_overrides" in inspector.get_table_names():
+        override_columns = {column["name"] for column in inspector.get_columns("loan_manual_overrides")}
+        required_override_columns = {
+            "emi_paid": "NUMERIC(14, 2)",
+            "prepayment_paid": "NUMERIC(14, 2)",
+        }
+        with engine.begin() as connection:
+            for column_name, column_sql in required_override_columns.items():
+                if column_name not in override_columns:
+                    connection.execute(text(f"ALTER TABLE loan_manual_overrides ADD COLUMN {column_name} {column_sql}"))
 
     if "credit_cards" in inspector.get_table_names():
         card_columns = {column["name"] for column in inspector.get_columns("credit_cards")}

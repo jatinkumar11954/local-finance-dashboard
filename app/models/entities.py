@@ -135,6 +135,10 @@ class Loan(TimestampMixin, Base):
     tenure_months: Mapped[int | None] = mapped_column()
     emi_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     outstanding_balance: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    summary_total_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    summary_interest_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    summary_principal_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    summary_prepayment_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     source_document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
     notes: Mapped[str | None] = mapped_column(Text)
 
@@ -197,13 +201,22 @@ class LoanMonthlyLedger(TimestampMixin, Base):
     prepayment_paid: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
     interest_charged: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     principal_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    principal_from_emi: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    principal_from_prepayment: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
+    total_principal_reduced: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     charges_paid: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
     closing_outstanding: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     inferred_monthly_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 8))
     inferred_annual_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    base_annual_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    rate_variance: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    rate_variance_percent: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
     provided_annual_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
     rate_source: Mapped[str] = mapped_column(String(40), default="unknown", nullable=False)
+    calculation_method: Mapped[str] = mapped_column(String(60), default="unknown", nullable=False)
     confidence_score: Mapped[float] = mapped_column(default=0.0, nullable=False)
+    manual_override_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(40), default="ok", nullable=False)
     calculation_notes: Mapped[str | None] = mapped_column(Text)
 
 
@@ -232,10 +245,53 @@ class LoanManualOverride(TimestampMixin, Base):
     closing_outstanding: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     interest_charged: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     principal_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    emi_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    prepayment_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     charges_paid: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     annual_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class LoanProjectionScenario(TimestampMixin, Base):
+    __tablename__ = "loan_projection_scenarios"
+    __table_args__ = (
+        Index("ix_loan_projection_scenarios_loan", "loan_id", "scenario_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    loan_id: Mapped[int] = mapped_column(ForeignKey("loans.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    scenario_type: Mapped[str] = mapped_column(String(40), default="base", nullable=False)
+    base_annual_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    start_month: Mapped[date | None] = mapped_column(Date)
+    opening_outstanding: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    scheduled_emi: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    recurring_extra_payment: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
+    one_time_prepayment: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
+    projected_closure_date: Mapped[date | None] = mapped_column(Date)
+    projected_total_interest: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    interest_saved: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    tenure_months_saved: Mapped[int | None] = mapped_column()
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class LoanProjectionRow(Base):
+    __tablename__ = "loan_projection_rows"
+    __table_args__ = (
+        Index("ix_loan_projection_rows_scenario_month", "scenario_id", "month"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scenario_id: Mapped[int] = mapped_column(ForeignKey("loan_projection_scenarios.id"), nullable=False)
+    month: Mapped[date] = mapped_column(Date, nullable=False)
+    opening_outstanding: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    projected_emi: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    projected_interest: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    projected_principal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    projected_prepayment: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
+    closing_outstanding: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utcnow)
 
 
 class CreditCard(TimestampMixin, Base):

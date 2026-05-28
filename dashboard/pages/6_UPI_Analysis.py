@@ -12,116 +12,113 @@ for path in (PROJECT_ROOT, DASHBOARD_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from app.services.analytics import analyze_upi_transactions, list_upi_sources
+from app.services.analytics import AnalyticsFilters, get_upi_analytics
 from common import default_period, format_inr, initialize_page, render_sidebar_status, session_scope
+
+
+SOURCE_OPTIONS = {
+    "All UPI sources": "all_sources",
+    "Bank statement UPI": "bank_statement",
+    "UPI exports": "upi_export",
+    "Credit card UPI": "credit_card_statement",
+}
 
 
 initialize_page("UPI Analysis")
 render_sidebar_status()
 
 st.title("UPI Analysis")
-st.caption("Inspect local UPI spend patterns, merchants, transfers, and repeated payments.")
+st.caption("UPI analytics across bank statements, UPI exports, and UPI-only credit card statements.")
 
 default_start, default_end = default_period()
-filter_columns = st.columns(3)
+filter_columns = st.columns(4)
 selected_range = filter_columns[0].date_input("Date range", value=(default_start, default_end))
-with session_scope() as session:
-    upi_sources = list_upi_sources(session)
-selected_source = filter_columns[1].selectbox("Account source", ["All sources"] + upi_sources)
-filter_columns[2].caption("UPI detection uses the normalized local transaction table only.")
+source_label = filter_columns[1].selectbox("UPI source", list(SOURCE_OPTIONS.keys()))
+category = filter_columns[2].text_input("Category filter")
+merchant = filter_columns[3].text_input("Receiver / merchant")
 
 start_date = selected_range[0] if isinstance(selected_range, tuple) else default_start
 end_date = selected_range[1] if isinstance(selected_range, tuple) and len(selected_range) > 1 else default_end
 
 with session_scope() as session:
-    analysis = analyze_upi_transactions(
-        session=session,
-        start_date=start_date,
-        end_date=end_date,
-        account_source=None if selected_source == "All sources" else selected_source,
+    response = get_upi_analytics(
+        session,
+        AnalyticsFilters(
+            start_date=start_date,
+            end_date=end_date,
+            source_type=SOURCE_OPTIONS[source_label],
+            category=category or None,
+            merchant=merchant or None,
+            transaction_channel="upi",
+            include_internal_transfers=True,
+        ),
     )
 
+summary = response["summary"]
+person_vs_merchant = {row["type"]: row["amount"] for row in response["charts"]["person_vs_merchant"]}
+merchant_upi_spend = person_vs_merchant.get("merchant_payment", summary["upi_spend"])
+person_transfer_movement = person_vs_merchant.get("person_transfer", 0)
+total_upi_movement = merchant_upi_spend + person_transfer_movement
 metric_columns = st.columns(5)
-metric_columns[0].metric("Total UPI spend", format_inr(analysis.total_upi_spend))
-metric_columns[1].metric("UPI transactions", f"{analysis.transaction_count:,}")
-metric_columns[2].metric("Average UPI amount", format_inr(analysis.average_transaction_amount))
-metric_columns[3].metric("Merchant spend", format_inr(analysis.merchant_spend))
-metric_columns[4].metric("Personal transfers", format_inr(analysis.personal_transfer_spend))
+metric_columns[0].metric("Merchant UPI spend", format_inr(merchant_upi_spend))
+metric_columns[1].metric("UPI transactions", f"{summary['transaction_count']:,}")
+metric_columns[2].metric("Average UPI debit", format_inr(total_upi_movement / summary["transaction_count"] if summary["transaction_count"] else 0))
+metric_columns[3].metric("UPI movement", format_inr(total_upi_movement))
+metric_columns[4].metric("Person transfers", format_inr(person_transfer_movement))
 
-if analysis.amount_quality_warning:
-    st.warning(analysis.amount_quality_warning)
-
-if not analysis.transactions:
-    st.info("No UPI debit transactions matched the current filters.")
+if summary["transaction_count"] == 0:
+    st.info("No UPI transactions matched the current filters.")
     st.stop()
-    raise SystemExit
 
 chart_columns = st.columns(2)
 with chart_columns[0]:
     st.subheader("Daily UPI spend")
-    daily_spend_df = pd.DataFrame(
-        [{"date": item["date"], "amount": float(item["amount"])} for item in analysis.daily_spend]
-    )
-    st.line_chart(daily_spend_df.set_index("date"))
+    daily_df = pd.DataFrame(response["charts"]["daily_spend"])
+    if daily_df.empty:
+        st.caption("No daily UPI data.")
+    else:
+        st.line_chart(daily_df.set_index("date")[["amount"]])
 
 with chart_columns[1]:
-    st.subheader("Top receivers / merchants")
-    top_receivers_df = pd.DataFrame(
-        [
-            {
-                "receiver_name": item["receiver_name"],
-                "transaction_count": item["count"],
-                "amount": float(item["amount"]),
-            }
-            for item in analysis.top_receivers
-        ]
-    )
-    st.dataframe(top_receivers_df, use_container_width=True, hide_index=True)
+    st.subheader("UPI spend by source")
+    source_df = pd.DataFrame(response["charts"]["source_comparison"])
+    if source_df.empty:
+        st.caption("No source data.")
+    else:
+        st.bar_chart(source_df.set_index("source_type")[["true_expense"]])
+
+detail_columns = st.columns(2)
+with detail_columns[0]:
+    st.subheader("Top UPI receivers")
+    receiver_df = pd.DataFrame(response["charts"]["upi_receivers"])
+    if receiver_df.empty:
+        st.caption("No receiver data.")
+    else:
+        st.dataframe(receiver_df, use_container_width=True, hide_index=True)
+
+with detail_columns[1]:
+    st.subheader("Weekday vs weekend UPI spend")
+    weekday_df = pd.DataFrame(response["charts"]["weekday_weekend_spend"])
+    st.bar_chart(weekday_df.set_index("day_type")[["amount"]])
 
 st.subheader("Repeated UPI payments")
-repeated_df = pd.DataFrame(
-    [
-        {
-            "receiver_name": payment.receiver_name,
-            "cadence": payment.cadence,
-            "occurrences": payment.occurrences,
-            "typical_amount": float(payment.typical_amount),
-            "total_spend": float(payment.total_spend),
-            "last_seen_date": payment.last_seen_date,
-        }
-        for payment in analysis.repeated_payments
-    ]
-)
+repeated_df = pd.DataFrame(response["tables"]["repeated_payments"])
 if repeated_df.empty:
-    st.caption("No repeated UPI payment patterns detected in the selected range.")
+    st.caption("No repeated UPI payment patterns detected.")
 else:
     st.dataframe(repeated_df, use_container_width=True, hide_index=True)
 
-st.subheader("Daily category-wise UPI spend")
-daily_category_df = pd.DataFrame(
-    [
-        {
-            "date": item["date"],
-            "category": item["category"],
-            "amount": float(item["amount"]),
-        }
-        for item in analysis.daily_category_spend
-    ]
-)
-st.dataframe(daily_category_df, use_container_width=True, hide_index=True)
+st.subheader("Small frequent UPI payments")
+small_df = pd.DataFrame(response["tables"]["small_frequent_payments"])
+if small_df.empty:
+    st.caption("No small frequent UPI pattern detected.")
+else:
+    st.dataframe(small_df, use_container_width=True, hide_index=True)
+
+st.subheader("Person vs merchant")
+person_df = pd.DataFrame(response["charts"]["person_vs_merchant"])
+st.bar_chart(person_df.set_index("type")[["amount"]])
 
 st.subheader("UPI transactions")
-transactions_df = pd.DataFrame(
-    [
-        {
-            "date": insight.date,
-            "receiver_name": insight.receiver_name,
-            "amount": float(insight.amount),
-            "category": insight.category,
-            "personal_transfer": insight.is_personal_transfer,
-            "raw_description": insight.raw_description,
-        }
-        for insight in analysis.transactions
-    ]
-)
+transactions_df = pd.DataFrame(response["tables"]["transactions"])
 st.dataframe(transactions_df, use_container_width=True, hide_index=True)

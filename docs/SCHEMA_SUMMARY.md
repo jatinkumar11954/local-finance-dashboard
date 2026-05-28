@@ -10,12 +10,14 @@ Compact memory of SQLAlchemy models. Do not paste full model definitions into pr
 | `categories` | Category reference data | name, parent_name, active | Seeded defaults |
 | `category_rules` | Editable categorization rules | pattern, field_name, target_category, priority, regex flags | Higher priority wins |
 | `merchants` | Merchant normalization memory | name, aliases, category | Not heavily used yet |
-| `loans` | Loan profile | name, bank/lender, masked account, principal, rate, tenure, EMI, outstanding | Supports one or more loans |
+| `loans` | Loan profile | name, bank/lender, masked account, principal, base rate, tenure, EMI, outstanding, summary paid totals | Supports one or more loans |
 | `loan_payments` | Legacy/simple loan payment rows | payment_date, amount, principal, interest, extra_principal | Retained for compatibility |
 | `loan_transactions` | Detected loan-related transaction records | loan_id, transaction_id, date, amount, type, confidence, review_status, components | Linked to original transaction/document when available |
-| `loan_monthly_ledger` | Calculated monthly loan ledger | opening, EMI, prepayment, interest, principal, charges, closing, inferred rates, notes | Unique per loan/month |
+| `loan_monthly_ledger` | Calculated monthly loan ledger | opening, EMI, prepayment, interest, principal_from_emi, principal_from_prepayment, total_principal, closing, inferred/base rates, variance, method, review_status | Unique per loan/month |
 | `loan_rate_events` | Manual/bank-provided rate events | effective_date, rate_name, rate_percent, source_note, document_id | No external rate fetching |
-| `loan_manual_overrides` | User override per loan/month | opening, closing, interest, principal, charges, annual_rate, notes | Takes priority over auto logic |
+| `loan_manual_overrides` | User override per loan/month | opening, closing, interest, principal, EMI, prepayment, charges, annual_rate, notes | Takes priority over auto logic |
+| `loan_projection_scenarios` | Stored loan projection metadata | loan_id, scenario_type, base_rate, opening, EMI, extra payments, interest_saved, closure date | Future persistence for projection runs |
+| `loan_projection_rows` | Month-wise projection rows | scenario_id, month, opening, projected EMI, interest, principal, prepayment, closing | Linked to projection scenario |
 | `credit_cards` | Card metadata | name, bank/issuer, last4, masked_card_number, usage_type, active, statement/due day, limit | `usage_type`: normal, upi_only, mixed, emi_focused |
 | `credit_card_statements` | Statement summary metadata | card_id, document_id, statement_month, due dates, total/minimum due, uploaded_tag, fees, interest | Source document link and upload analysis tag |
 | `credit_card_transactions` | Card-specific parsed transaction rows | card_id, statement_id, transaction_id, date, parsed_type, merchant, confidence, manual_override | Mirrors normalized transaction for card analysis |
@@ -33,7 +35,8 @@ Compact memory of SQLAlchemy models. Do not paste full model definitions into pr
 - `accounts.id -> documents.account_id`, `transactions.account_id`
 - `transactions.id -> loan_transactions.transaction_id`
 - `documents.id -> loan_transactions.source_document_id`
-- `loans.id -> loan_transactions.loan_id`, `loan_monthly_ledger.loan_id`, `loan_rate_events.loan_id`, `loan_manual_overrides.loan_id`
+- `loans.id -> loan_transactions.loan_id`, `loan_monthly_ledger.loan_id`, `loan_rate_events.loan_id`, `loan_manual_overrides.loan_id`, `loan_projection_scenarios.loan_id`
+- `loan_projection_scenarios.id -> loan_projection_rows.scenario_id`
 - `documents.id -> credit_card_statements.source_document_id`
 - `credit_cards.id -> credit_card_statements.credit_card_id`, `credit_card_transactions.card_id`, `credit_card_emi_plans.card_id`
 - `transactions.id -> credit_card_transactions.transaction_id`, `credit_card_emi_charges.transaction_id`

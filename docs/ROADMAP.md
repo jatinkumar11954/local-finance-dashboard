@@ -9,7 +9,7 @@
 - Editable categorization rules.
 - Hyderabad benchmark comparison.
 - Loan profiles, amortization, prepayment scenarios.
-- Loan ingestion with MBK/Loan Account Payment prepayment, LOAN RECOVERY EMI, sorted profiles/transactions, profile-schedule first opening, import summaries/relinking, monthly ledger, inferred rates, overrides.
+- Loan ingestion with EMI/prepayment separation, floating-rate monthly actuals, base-rate variance, actual-vs-projected tables, profile-schedule first opening, import summaries/relinking, monthly ledger, inferred rates, overrides.
 - Credit card profiles, Normal/EMI/UPI-only/Mixed statement tags, EMI lifecycle plans, no-cost EMI verification, GST/processing-fee split, UPI-card separation, and manual review.
 - Upload reprocessing for selected/all locally stored files after parser/logic changes.
 - UPI daily spend, amount/count metrics, top receivers, repeated payments, and parser-quality warnings.

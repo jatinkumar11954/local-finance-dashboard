@@ -1,7 +1,24 @@
-# Local Finance Intelligence Dashboard
+# Local Finance Dashboard — Offline Personal Finance Analytics
 
-Offline-first personal finance dashboard for local statement ingestion, normalization, categorization, loan/card/UPI analysis, Hyderabad benchmarks, and local assistant queries.
+Analyze bank statements, credit card bills, UPI payments, loans, EMIs, and no-cost EMI charges locally — without uploading sensitive financial data to the cloud.
+A privacy-first personal finance dashboard that helps you understand where your money is going.
 
+This app lets you upload bank statements, credit card statements, UPI exports, and loan documents locally, then converts them into dashboards, charts, and actionable insights.
+
+It helps answer questions like:
+
+Where am I spending the most?
+Are my small UPI payments becoming a big monthly expense?
+Am I paying hidden credit card interest, GST, or processing fees?
+Is my no-cost EMI actually no-cost?
+How much of my loan EMI is interest vs principal?
+Are my credit card payments being double-counted as expenses?
+
+All processing happens locally.
+No cloud upload.
+No external APIs.
+No hosted AI.
+No telemetry.
 ## Privacy Guarantees
 
 - No internet APIs, cloud storage, hosted AI APIs, telemetry, crash reporting, or external financial-data calls.
@@ -16,8 +33,9 @@ Offline-first personal finance dashboard for local statement ingestion, normaliz
 | CSV/XLSX/digital PDF upload | Implemented with selected/all upload reprocessing and bilingual loan table parsing |
 | Transaction normalization/review | Implemented |
 | Rule-based categorization | Implemented, editable |
+| Analytics API/dashboard | Implemented: source-separated bank/card/UPI/loan/all-sources analytics, true-expense deduplication, cashflow, recurring, anomaly, merchant/category, budget/benchmark views |
 | Dashboard and Hyderabad benchmarks | Implemented |
-| Loan analysis | Implemented: EMI, MBK/Loan Account Payment prepayment, LOAN RECOVERY, profile-schedule opening, ledger, inferred rates, overrides |
+| Loan analysis | Implemented: EMI vs MBK prepayment separation, floating-rate monthly ledger, base-rate variance, actual-vs-projected comparison, profile-schedule opening, overrides |
 | Credit card analysis | Implemented: card profiles, Normal/EMI/UPI-only/Mixed tags, EMI plans, no-cost EMI true-cost checks, GST/fee separation, UPI-card analysis, manual review |
 | UPI analysis | Implemented: receiver extraction, amount/count metrics, daily spend, repeated payments, parser-quality warnings |
 | Local assistant | Implemented: deterministic handlers, keyword search, optional local embeddings/Ollama |
